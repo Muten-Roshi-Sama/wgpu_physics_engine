@@ -31,17 +31,47 @@ struct VertexOutput {
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    out.clip = params.proj * params.view * vec4<f32>(in.position, 1.0);
-    out.position = in.position;
-    out.normal = in.normal;
-    out.uv = in.uv;
+    // ==============================================================================
+    // Let an object(/Model) with coordinates p_model = (x_o, y_o, z_o, t_o=1.0)
+    // World coordinates :  p_world = (x_w, ...)   =  p_model * Model
+    // Camera space      :  p_view  = (x_cam, ..)  =  p_world * View Matrix (view)
+    // clip-space        :  p_clip  = (x_clip, ..) =  p_view  * Projection matrix (proj)
+    // -----
+    // Here Model is the identity matrix (no per-object transform yet)
+    out.clip = params.proj * params.view * vec4<f32>(in.position, 1.0);  //Clip = Proj * View * Model * (x_o, y_o, ...)
+    out.position = in.position;       // original Object position (used for light)
+    out.normal = in.normal;          // vertex normal unit-vector (not yet normalized)
+    out.uv = in.uv;                 // texture coordinates to sample the given texture image
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let light_dir = normalize(light_uni.light.xyz - in.position);
-    let shading = clamp(dot(light_dir, normalize(in.normal)), 0.2, 1.0);
+    /*
+        Apply diffuse lighting model with color clamping (Math.floor):
+            - Intensity = (L * N) * C_d
+            where :
+                - L the direction vector from light-source to object.
+                - N the normal vector to the surface.
+                - C_d the (r, g, b) colors.
+    */
+
+    // Vectors
+    let light_dir    = normalize(light_uni.light.xyz - in.position);            // 
+    let N: vec3<f32> = normalize(in.normal);
+    
+
+    // Clamping parameter
+    let ambient_min : f32 = 0.1;
+    let ambient_max : f32 = 1.0;
+    let luminosity: f32 = 2.4;  // shading multiplier
+
+    // Intensity (shading)
+    let shading = clamp(dot(light_dir, N), ambient_min, ambient_max);
+    
+    // Sample base color from sample
     let color = textureSample(diffuse_tex, diffuse_samp, in.uv);
-    return vec4<f32>(color.xyz * shading*2.0, 1.0);
+
+    // return the diffuse intensity reflected.
+    return vec4<f32>(color.xyz * shading * luminosity, 1.0);
 }
