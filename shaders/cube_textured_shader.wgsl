@@ -41,7 +41,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let light_dir = normalize(light_uni.light.xyz - in.position);
-    let shading = clamp(dot(light_dir, normalize(in.normal)), 0.1, 1.0);
+    let shading = clamp(dot(light_dir, normalize(in.normal)), 0.2, 1.0);
     let color = textureSample(diffuse_tex, diffuse_samp, in.uv);
-    return vec4<f32>(color.xyz * shading, 1.0);
+    return vec4<f32>(color.xyz * shading*2.0, 1.0);
 }

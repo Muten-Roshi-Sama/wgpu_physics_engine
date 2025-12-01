@@ -9,10 +9,15 @@ use wgpu_bootstrap::{
     App, Context,
 };
 
+// =========== CONFIGURATIONS =============
+
 const SHADER_FILE: &str = "shaders/cube_textured_shader.wgsl";
 const TEXTURE_FILE: &str = "textures/texture.png";
 
+const LIGHT_INIT: [f32; 4] = [2.0, 2.0, 2.0, 0.0];
 
+
+// ========================================
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -184,7 +189,7 @@ impl TexturedCubeApp {
             ],
         });
 
-        let initial_light = LightUniform { light: [0.0, 0.0, 2.0, 0.0] };
+        let initial_light = LightUniform { light: LIGHT_INIT };
 
         let light_buffer = context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Light Buffer"),
