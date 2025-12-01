@@ -12,13 +12,15 @@ use wgpu_bootstrap::{
 // =========== CONFIGURATIONS =============
 
 const SHADER_FILE: &str = "globe_shader.wgsl";
-const TEXTURE_FILE: &str = "../../textures/texture.png";
+// const TEXTURE_FILE: &str = "../../textures/texture.png";
+// const TEXTURE_FILE: &str = "../../textures/earth2048.bmp";
+const TEXTURE_FILE: &str = "../../textures/moon1024.bmp";
 
 const LIGHT_INIT: [f32; 4] = [2.0, 2.0, 2.0, 0.0];
 
 const RADIUS: f32 = 1.0;
-const STACK_COUNT: usize = 32;
-const SECTOR_COUNT: usize = 64;
+const STACK_COUNT: usize = 64;
+const SECTOR_COUNT: usize = 128;
 // ========================================
 
 #[repr(C)]
