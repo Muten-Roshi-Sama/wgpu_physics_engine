@@ -79,10 +79,13 @@ impl Vertex {
 // Vertices, indexes generated in main.rs
 
 pub struct SphereApp {
+    // Rendering
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     render_pipeline: wgpu::RenderPipeline,
     num_indices: u32,
+
+    // Bind gorups
     camera: OrbitCamera,
     texture_bind_group: wgpu::BindGroup,
     light_bind_group: wgpu::BindGroup,
@@ -93,117 +96,37 @@ pub struct SphereApp {
     light_pos: [f32; 3],
     ks: f32,
     shininess: f32,
-    stack_count: usize,   // TODO: regenerating requires rebuilding buffers
-    sector_count: usize,  //
-
-
+    stack_count: usize,   // TODO: for now, display only....
+    sector_count: usize,  // TODO: ... regenerating requires rebuilding buffers
 }
 
 impl SphereApp {
     pub fn new(context: &Context) -> Self {
 
-        // Generate raw geometry from crate-level module
-        let (raw_vertices, indices) =
-            crate::sphere_vertices::generate_uv_sphere(RADIUS, STACK_COUNT, SECTOR_COUNT);
+        // 1. Generate geometry
+        let (vertices, indices, num_indices) = Self::create_sphere_geometry();
 
-        // Convert raw tuples into Vertex type
-        let vertices: Vec<Vertex> = raw_vertices
-            .into_iter()
-            .map(|(pos, normal, uv)| Vertex { position: pos, normal, uv })
-            .collect();
 
-        // GPU index buffer
-        let index_buffer = context.device()
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Index Buffer"),
-                contents: bytemuck::cast_slice(&indices),
-                usage: wgpu::BufferUsages::INDEX,
-            });
+        // 2. gpu buff
+        let vertex_buffer = Self::create_vertex_buffer(context, &vertices);
+        let index_buffer = Self::create_index_buffer(context, &indices);
 
-        let num_indices = indices.len() as u32;
+
+        // 3. Bind Groups lyouts   
+            /* 
+            - GROUP(0) Camera
+            - GROUP(1) Texture & Sampler
+            - GROUP(2) Light Layout
+            */ 
+        let camera_bind_group_layout = context.device().create_bind_group_layout(&CameraUniform::desc());
+
+        let texture_bind_group_layout = Self::create_texture_bind_group_layout(context);
+
+        let light_bind_group_layout = Self::create_light_bind_group_layout(context);
         
-        // GPU vertex buffer
-        let vertex_buffer = context.device()
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Vertex Buffer"),
-                    contents: bytemuck::cast_slice(&vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
 
-        // GROUP(0) camera layout
-        let camera_bind_group_layout = context
-            .device()
-            .create_bind_group_layout(&CameraUniform::desc());
 
-        // GROUP(1) texture & sampler layout
-        let texture_bind_group_layout = context.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("texture_bind_group_layout"),
-            entries: &[
-                // binding 0: texture view
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    },
-                    count: None,
-                },
-                // binding 1: sampler
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
 
-        // GROUP(2) light layout
-        let light_bind_group_layout = context.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("light_bind_group_layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-
-        let initial_light: LightUniform = LightUniform { 
-            light: LIGHT_POS,
-            ks: KS,
-            shininess : SHININESS,
-            _pad: _PAD,
-        };
-
-        let light_buffer = context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Light Buffer"),
-            contents: bytemuck::bytes_of(&initial_light),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let light_bind_group = context.device().create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("light_bind_group"),
-            layout: &light_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &light_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-            ],
-        });
 
         // SHADER
         let shader_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SHADER_FILE);
@@ -347,7 +270,84 @@ impl SphereApp {
             sector_count: SECTOR_COUNT,
         }
     }
+
+
+    // =============================================
+    //           Helpers
+    // =============================================
+
+    // 1. Geometry
+    fn create_sphere_geometry() -> (Vec<Vertex>, Vec<u32>, u32) {
+        let (raw_vertices, indices) =
+            crate::sphere_vertices::generate_uv_sphere(RADIUS, STACK_COUNT, SECTOR_COUNT);
+        
+        let vertices: Vec<Vertex> = raw_vertices
+            .into_iter()
+            .map(|(pos, normal, uv)| Vertex { position: pos, normal, uv })
+            .collect();
+        
+        let num_indices = indices.len() as u32;
+        (vertices, indices, num_indices)
+    }
+
+    // 2. Buffers
+    fn create_vertex_buffer(context: &Context, vertices: &[Vertex]) -> wgpu::Buffer {
+        context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        })
+    }
+    
+    fn create_index_buffer(context: &Context, indices: &[u32]) -> wgpu::Buffer {
+        context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(indices),
+            usage: wgpu::BufferUsages::INDEX,
+        })
+    }
+
+
+    // 3. Bind Groups
+    fn create_texture_bind_group_layout(context: &Context) -> wgpu::BindGroupLayout {
+        context.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("texture_bind_group_layout"),
+            entries: &[
+                // binding 0: texture view
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                // binding 1: sampler
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        })
+    }
+
+
+
+
+
+
+
+
+
 }
+
+
+
+
 
 impl App for SphereApp {
     fn input(&mut self, input: egui::InputState, context: &Context) {
@@ -433,7 +433,5 @@ impl App for SphereApp {
             .set_aspect(new_width as f32 / new_height as f32)
             .update(context);
     }
-
-
 
 }
