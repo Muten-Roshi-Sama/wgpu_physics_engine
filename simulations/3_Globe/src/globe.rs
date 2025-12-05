@@ -86,8 +86,17 @@ pub struct SphereApp {
     camera: OrbitCamera,
     texture_bind_group: wgpu::BindGroup,
     light_bind_group: wgpu::BindGroup,
-    // _light_buffer: wgpu::Buffer,
+    _light_buffer: wgpu::Buffer,
     fps: f32,
+
+    // Eframe
+    light_pos: [f32; 3],
+    ks: f32,
+    shininess: f32,
+    stack_count: usize,   // TODO: regenerating requires rebuilding buffers
+    sector_count: usize,  //
+
+
 }
 
 impl SphereApp {
@@ -328,8 +337,14 @@ impl SphereApp {
             camera,
             texture_bind_group,
             light_bind_group,
-            // _light_buffer: light_buffer,
+            _light_buffer: light_buffer,
             fps: 0.0,
+            // Eframe
+            light_pos: [LIGHT_POS[0], LIGHT_POS[1], LIGHT_POS[2]],
+            ks: KS,
+            shininess: SHININESS,
+            stack_count: STACK_COUNT,
+            sector_count: SECTOR_COUNT,
         }
     }
 }
@@ -359,10 +374,57 @@ impl App for SphereApp {
 
     fn render_gui(&mut self, egui_ctx: &egui::Context, context: &Context) {
         egui::Window::new("Params").show(egui_ctx, |ui| {
+
+            // Radius slider
+            ui.heading("Camera");
             let mut radius = self.camera.radius();
-            ui.add(egui::Slider::new(&mut radius, 2.0..=10.0).text("radius"));
-            self.camera.set_radius(radius).update(context);
-            ui.add(egui::Label::new(format!("FPS: {}", self.fps.round())));
+            if ui.add(egui::Slider::new(&mut radius, 2.0..=10.0).text("radius")).changed() {
+                self.camera.set_radius(radius).update(context);
+            }
+
+            // Light controls
+            ui.heading("Light");
+            let mut light_changed = false;
+            
+            light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[0], -5.0..=5.0).text("Light X")).changed();
+            light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[1], -5.0..=5.0).text("Light Y")).changed();
+            light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[2], -5.0..=5.0).text("Light Z")).changed();
+            
+            ui.add_space(5.0);
+            light_changed |= ui.add(egui::Slider::new(&mut self.ks, 0.0..=2.0).text("Specular (ks)")).changed();
+            light_changed |= ui.add(egui::Slider::new(&mut self.shininess, 1.0..=512.0).text("Shininess")).changed();
+            // Update GPU buffer if any light param changed
+            if light_changed {
+                let updated_light = LightUniform {
+                    light: [self.light_pos[0], self.light_pos[1], self.light_pos[2], 0.0],
+                    ks: self.ks,
+                    shininess: self.shininess,
+                    _pad: _PAD,
+                };
+                context.queue().write_buffer(
+                    &self._light_buffer,
+                    0,
+                    bytemuck::bytes_of(&updated_light)
+                );
+            }
+            
+            ui.separator();
+
+
+            // Geometry info (read-only for now)
+            ui.heading("Geometry");
+            ui.label(format!("Stacks: {}", self.stack_count));
+            ui.label(format!("Sectors: {}", self.sector_count));
+            ui.label(format!("Vertices: {}", (self.stack_count + 1) * (self.sector_count + 1)));
+            
+            ui.separator();
+            
+
+
+            // FPS
+            ui.label(format!("FPS: {}", self.fps.round()));
+            // Other
+
         });
     }
 
