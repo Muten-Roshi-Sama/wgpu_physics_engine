@@ -87,6 +87,7 @@ pub struct SphereApp {
     texture_bind_group: wgpu::BindGroup,
     light_bind_group: wgpu::BindGroup,
     // _light_buffer: wgpu::Buffer,
+    fps: f32,
 }
 
 impl SphereApp {
@@ -328,6 +329,7 @@ impl SphereApp {
             texture_bind_group,
             light_bind_group,
             // _light_buffer: light_buffer,
+            fps: 0.0,
         }
     }
 }
@@ -350,4 +352,26 @@ impl App for SphereApp {
         //---
         render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
     }
+
+    fn update(&mut self, delta_time: f32, _context: &Context) {
+        self.fps = 1.0 / delta_time;
+    }
+
+    fn render_gui(&mut self, egui_ctx: &egui::Context, context: &Context) {
+        egui::Window::new("Params").show(egui_ctx, |ui| {
+            let mut radius = self.camera.radius();
+            ui.add(egui::Slider::new(&mut radius, 2.0..=10.0).text("radius"));
+            self.camera.set_radius(radius).update(context);
+            ui.add(egui::Label::new(format!("FPS: {}", self.fps.round())));
+        });
+    }
+
+    fn resize(&mut self, new_width: u32, new_height: u32, context: &Context) {
+        self.camera
+            .set_aspect(new_width as f32 / new_height as f32)
+            .update(context);
+    }
+
+
+
 }

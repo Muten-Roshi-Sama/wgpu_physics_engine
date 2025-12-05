@@ -61,10 +61,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     
     // Clamping parameter
     let ambient : f32 = 0.1;
-    let luminosity: f32 = 2.4;  // shading multiplier
+    let luminosity: f32 = 1.8;  // shading multiplier
 
     // Intensity (shading)
-    let shading = clamp(dot(l, n), ambient_min, 1.0);
+    let shading = clamp(dot(l, n), ambient, 1.0);
     
     // Sample base color from sample
     let color = luminosity * textureSample(diffuse_tex, diffuse_samp, in.uv);
