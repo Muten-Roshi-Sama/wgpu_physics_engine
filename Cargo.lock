@@ -2505,6 +2505,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "particles"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "cgmath",
+ "eframe",
+ "env_logger",
+ "image 0.24.9",
+ "log",
+ "wgpu-bootstrap",
+]
+
+[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"

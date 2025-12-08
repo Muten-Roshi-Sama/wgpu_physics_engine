@@ -1,15 +1,9 @@
-# Cargo.toml -- main
-[workspace]
-members = [
-    "simulations/1_Cube",
-    "simulations/2_TexturedCube",
-    "simulations/3_Globe",
-    "simulations/4_instances_imgui",
-    # "simulations/5_cloth_simulation",
-]
+[package]
+name = "particles"
+version = "0.1.0"
+edition = "2021"
 
-
-[workspace.dependencies]
+[dependencies]
 env_logger = "0.11"
 log = "0.4"
 bytemuck = { version = "1.18", features = ["derive"] }
