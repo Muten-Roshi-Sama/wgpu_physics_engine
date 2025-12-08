@@ -27,8 +27,10 @@ const _PAD: [f32;2] = [0.0, 0.0];
 const RADIUS: f32 = 1.0;
 const STACK_COUNT: usize = 64;
 const SECTOR_COUNT: usize = 128;
-// ========================================
 
+
+
+// =========== STRUCTS & IMPL ============
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
@@ -76,8 +78,10 @@ impl Vertex {
 }
 
 
-// Vertices, indexes generated in main.rs
 
+
+
+// ========== APP ==============
 pub struct SphereApp {
     // Rendering
     vertex_buffer: wgpu::Buffer,
@@ -89,7 +93,7 @@ pub struct SphereApp {
     camera: OrbitCamera,
     texture_bind_group: wgpu::BindGroup,
     light_bind_group: wgpu::BindGroup,
-    _light_buffer: wgpu::Buffer,
+    light_buffer: wgpu::Buffer,
     fps: f32,
 
     // Eframe
@@ -122,135 +126,34 @@ impl SphereApp {
 
         let texture_bind_group_layout = Self::create_texture_bind_group_layout(context);
 
+
+        // 4. Light Bind Group, Buffer and Uniform
         let light_bind_group_layout = Self::create_light_bind_group_layout(context);
         
-
-
-
-
-        // SHADER
-        let shader_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SHADER_FILE);
-        let shader_src =
-            std::fs::read_to_string(&shader_path).expect("failed to read shader file");
-        let shader = context.device().create_shader_module(
-            wgpu::ShaderModuleDescriptor {
-                label: Some("textured_shader"),
-                source: wgpu::ShaderSource::Wgsl(shader_src.into()),
-            },
-        );
-
-        // PIPELINE
-        let pipeline_layout = context.device().create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("pipeline_layout"),
-            bind_group_layouts: &[&camera_bind_group_layout, &texture_bind_group_layout, &light_bind_group_layout],
-            push_constant_ranges: &[],
-        });
-
-        let render_pipeline = context.device().create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("render_pipeline"),
-                    layout: Some(&pipeline_layout),
-                    vertex: wgpu::VertexState {
-                        module: &shader,
-                        entry_point: "vs_main",
-                        buffers: &[Vertex::desc()],
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: &shader,
-                        entry_point: "fs_main",
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format: context.format(),
-                            blend: Some(wgpu::BlendState::REPLACE),
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    }),
-                    primitive: wgpu::PrimitiveState {
-                        topology: wgpu::PrimitiveTopology::TriangleList,
-                        strip_index_format: None,
-                        front_face: wgpu::FrontFace::Ccw,
-                        cull_mode: Some(wgpu::Face::Back),
-                        // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
-                        polygon_mode: wgpu::PolygonMode::Fill,
-                        // Requires Features::DEPTH_CLIP_CONTROL
-                        unclipped_depth: false,
-                        // Requires Features::CONSERVATIVE_RASTERIZATION
-                        conservative: false,
-                    },
-                    depth_stencil: Some(wgpu::DepthStencilState {
-                        format: context.depth_stencil_format(),
-                        depth_write_enabled: true,
-                        depth_compare: wgpu::CompareFunction::Less,
-                        stencil: wgpu::StencilState::default(),
-                        bias: wgpu::DepthBiasState::default(),
-                    }),
-                    multisample: wgpu::MultisampleState {
-                        count: 1,
-                        mask: !0,
-                        alpha_to_coverage_enabled: false,
-                    },
-                    multiview: None,
-                    cache: None,
-                });
-
-        // LOAD img
-        let img_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(TEXTURE_FILE);
-        let img = image::open(&img_path).expect("failed to load texture").to_rgba8();
-        let (width, height) = img.dimensions();
-        let texture_size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
-
-        let texture = context.device().create_texture(&wgpu::TextureDescriptor {
-            label: Some("diffuse_texture"),
-            size: texture_size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        // upload
-        context.queue().write_texture(
-            wgpu::ImageCopyTexture { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            &img,
-            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4 * width), rows_per_image: Some(height) },
-            texture_size,
-        );
-
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let sampler = context.device().create_sampler(&wgpu::SamplerDescriptor {
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
-
-        let texture_bind_group = context.device().create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("texture_bind_group"),
-            layout: &texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&texture_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
-            ],
-        });
-
-
-        // CAMERA
-        let mut camera = OrbitCamera::new(
+        let (light_buffer, light_bind_group) = Self::create_light_resources(
             context,
-            45.0,
-            context.size().x / context.size().y,
-            0.1,
-            100.0,
+            &light_bind_group_layout,
         );
-        camera
-            .set_target(cgmath::point3(0.0, 0.0, 0.0))
-            .set_polar(cgmath::point3(2.0, 0.0, 0.0))
-            .update(context);
+
+        // 5. Textures
+        let texture_bind_group = Self::load_texture_and_create_bind_group(
+            context,
+            &texture_bind_group_layout,
+            TEXTURE_FILE,
+        );
+
+        // 6. Render Pipeline
+        let render_pipeline = Self::create_render_pipeline(
+            context,
+            &camera_bind_group_layout,
+            &texture_bind_group_layout,
+            &light_bind_group_layout,
+        );
+
+        // 7. Camera
+        let camera = Self::setup_camera(context);
+
+
 
         Self {
             vertex_buffer,
@@ -260,15 +163,16 @@ impl SphereApp {
             camera,
             texture_bind_group,
             light_bind_group,
-            _light_buffer: light_buffer,
+            light_buffer,
             fps: 0.0,
-            // Eframe
             light_pos: [LIGHT_POS[0], LIGHT_POS[1], LIGHT_POS[2]],
             ks: KS,
             shininess: SHININESS,
             stack_count: STACK_COUNT,
             sector_count: SECTOR_COUNT,
         }
+
+    // --- end of new() ---
     }
 
 
@@ -336,25 +240,242 @@ impl SphereApp {
     }
 
 
+    // 4. Light Bind Group, Buffer and Uniform
+    fn create_light_bind_group_layout(context: &Context) -> wgpu::BindGroupLayout {
+        context.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("light_bind_group_layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        })
+    }
+
+    fn create_light_resources(
+        context: &Context,
+        layout: &wgpu::BindGroupLayout,
+        ) -> (wgpu::Buffer, wgpu::BindGroup) {
+
+        // Light init params
+        let initial_light = LightUniform {
+            light: LIGHT_POS,
+            ks: KS,
+            shininess: SHININESS,
+            _pad: _PAD,
+        };
+
+        let light_buffer = context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Light Buffer"),
+            contents: bytemuck::bytes_of(&initial_light),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let light_bind_group = context.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("light_bind_group"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &light_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+            ],
+        });
+
+        (light_buffer, light_bind_group)
+    }
 
 
+    // 5. Textures
+    fn load_texture_and_create_bind_group(
+        context: &Context,
+        layout: &wgpu::BindGroupLayout,
+        texture_path: &str,
+        ) -> wgpu::BindGroup {
+        let img_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(texture_path);
+        let img = image::open(&img_path)
+            .expect("failed to load texture")
+            .to_rgba8();
+        
+        let (width, height) = img.dimensions();
+        let texture_size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        
+        let texture = context.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("diffuse_texture"),
+            size: texture_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        
+        context.queue().write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &img,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * width),
+                rows_per_image: Some(height),
+            },
+            texture_size,
+        );
+        
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = context.device().create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        
+        context.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("texture_bind_group"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        })
+    }
+
+    // 6. Render Pipeline
+    fn create_render_pipeline(
+        context: &Context,
+        camera_layout: &wgpu::BindGroupLayout,
+        texture_layout: &wgpu::BindGroupLayout,
+        light_layout: &wgpu::BindGroupLayout,
+        ) -> wgpu::RenderPipeline {
+        let shader_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SHADER_FILE);
+        let shader_src = std::fs::read_to_string(&shader_path)
+            .expect("failed to read shader file");
+        
+        let shader = context.device().create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("globe_shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_src.into()),
+        });
+        
+        let pipeline_layout = context.device().create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("pipeline_layout"),
+            bind_group_layouts: &[camera_layout, texture_layout, light_layout],
+            push_constant_ranges: &[],
+        });
+        
+        context.device().create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("render_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: &[Vertex::desc()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: context.format(),
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: context.depth_stencil_format(),
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        })
+    }
+    
+
+    // 7. Camera
+    fn setup_camera(context: &Context) -> OrbitCamera {
+        let mut camera = OrbitCamera::new(
+            context,
+            45.0,
+            context.size().x / context.size().y,
+            0.1,
+            100.0,
+        );
+        camera
+            .set_target(cgmath::point3(0.0, 0.0, 0.0))
+            .set_polar(cgmath::point3(2.0, 0.0, 0.0))
+            .update(context);
+        camera
+    }
 
 
+    // ============== Update =====================
+    fn update_light_uniform(&self, context: &Context) {
+        let updated_light = LightUniform {
+            light: [self.light_pos[0], self.light_pos[1], self.light_pos[2], 0.0],
+            ks: self.ks,
+            shininess: self.shininess,
+            _pad: _PAD,
+        };
+        context.queue().write_buffer(
+            &self.light_buffer,
+            0,
+            bytemuck::bytes_of(&updated_light),
+        );
+    }
 
 
-
+    
 }
 
 
 
-
-
 impl App for SphereApp {
-    fn input(&mut self, input: egui::InputState, context: &Context) {
-        self.camera.input(input, context);
-    }
-
     fn render(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+        // Set pipeline, buffers
         render_pass.set_pipeline(&self.render_pipeline);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -363,13 +484,8 @@ impl App for SphereApp {
         render_pass.set_bind_group(1, &self.texture_bind_group, &[]);
         render_pass.set_bind_group(2, &self.light_bind_group, &[]);
 
-
-        //---
+        // Draw
         render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
-    }
-
-    fn update(&mut self, delta_time: f32, _context: &Context) {
-        self.fps = 1.0 / delta_time;
     }
 
     fn render_gui(&mut self, egui_ctx: &egui::Context, context: &Context) {
@@ -402,7 +518,7 @@ impl App for SphereApp {
                     _pad: _PAD,
                 };
                 context.queue().write_buffer(
-                    &self._light_buffer,
+                    &self.light_buffer,
                     0,
                     bytemuck::bytes_of(&updated_light)
                 );
@@ -426,6 +542,15 @@ impl App for SphereApp {
             // Other
 
         });
+    }
+
+
+    fn input(&mut self, input: egui::InputState, context: &Context) {
+        self.camera.input(input, context);
+    }
+
+    fn update(&mut self, delta_time: f32, _context: &Context) {
+        self.fps = 1.0 / delta_time;
     }
 
     fn resize(&mut self, new_width: u32, new_height: u32, context: &Context) {
