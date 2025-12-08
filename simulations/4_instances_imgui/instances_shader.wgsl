@@ -28,11 +28,14 @@ struct VertexInput {
     @location(2) uv: vec2<f32>,
 };
 
-struct InstanceInput {
-    @location(3) c0: vec4<f32>,
-    @location(4) c1: vec4<f32>,
-    @location(5) c2: vec4<f32>,
-    @location(6) c3: vec4<f32>,
+struct Particles {
+    // @location(3) c0: vec4<f32>,
+    // @location(4) c1: vec4<f32>,
+    // @location(5) c2: vec4<f32>,
+    // @location(6) c3: vec4<f32>,
+    // position
+    // velocity
+    // optional: accelleration
 };
 
 
