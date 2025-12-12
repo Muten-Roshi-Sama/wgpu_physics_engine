@@ -29,10 +29,10 @@ struct VertexInput {
 };
 
 struct Particles {
-    // @location(3) c0: vec4<f32>,
-    // @location(4) c1: vec4<f32>,
-    // @location(5) c2: vec4<f32>,
-    // @location(6) c3: vec4<f32>,
+    @location(3) c0: vec4<f32>,
+    @location(4) c1: vec4<f32>,
+    @location(5) c2: vec4<f32>,
+    @location(6) c3: vec4<f32>,
     // position
     // velocity
     // optional: accelleration
@@ -47,7 +47,7 @@ struct VertexOutput {
 };
 
 @vertex
-fn vs_main(in: VertexInput, instance: InstanceInput) -> VertexOutput {
+fn vs_main(in: VertexInput, particle: Particles) -> VertexOutput {
     /* ==============================================================================
         Let an object(/Model) with coordinates p_model = (x_o, y_o, z_o, t_o=1.0)
          World coordinates :  p_world = (x_w, ...)   =  p_model * Model
@@ -55,8 +55,8 @@ fn vs_main(in: VertexInput, instance: InstanceInput) -> VertexOutput {
          clip-space        :  p_clip  = (x_clip, ..) =  p_view  * Projection matrix (proj)
     */ 
     var out: VertexOutput;
-    let model = mat4x4<f32>(instance.c0, instance.c1, instance.c2, instance.c3);
-    let rot = mat3x3<f32>(instance.c0.xyz, instance.c1.xyz, instance.c2.xyz);
+    let model = mat4x4<f32>(particle.c0, particle.c1, particle.c2, particle.c3);
+    let rot = mat3x3<f32>(particle.c0.xyz, particle.c1.xyz, particle.c2.xyz);
 
     let world_pos = model * vec4<f32>(in.position, 1.0);  // local to world
 
