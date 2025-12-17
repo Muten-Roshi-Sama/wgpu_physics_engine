@@ -12,6 +12,7 @@ use wgpu_bootstrap::{
 // =========== CONFIGURATIONS =============
 
 const SHADER_FILE: &str = "instances_shader.wgsl";
+const WIREFRAME_SHADER_FILE: &str = "wireframe_shader.wgsl";
 const COMPUTE_SHADER_FILE: &str = "compute_movement.wgsl";
 
 const TEXTURE_FILE: &str = "../../textures/red.png";
@@ -24,25 +25,28 @@ const TEXTURE_FILE: &str = "../../textures/red.png";
 // Camera
 const DEFAULT_ZOOM: f32 = 40.0;
 
-// Specular light parameters
-const LIGHT_POS: [f32; 4] = [2.0, 2.0, 2.0, 0.0];
-const KS: f32 = 0.15;
-const SHININESS: f32 = 128.0;
-const _PAD: u32 = 0u32;
+// Cube Wireframe
+const WIREFRAME_COLOR: [f32; 3] = [0.0, 0.0, 1.0]; // bleu
+const BOUNDS: f32 = 10.0;
 
 // Globe geometry
 const RADIUS: f32 = 1.0;
+const INITIAL_SPEED: f32 = 40.0;
 const STACK_COUNT: usize = 64;
 const SECTOR_COUNT: usize = 128;
 
 // Physics
-const NUM_PARTICLES: u32 = 5;
+const NUM_PARTICLES: u32 = 10;
 const PARTICLE_SCALE : f32 = 1.0;
 const TIME_SCALE: f32 = 1.0;
-// const GRAVITY: [f32; 3] = [0.0, 0.0, 0.0];
 const GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
-const BOUNDS: f32 = 5.0;
 const DAMPING: f32 = 0.95;
+
+// NOT USED HERE ---- Specular light parameters
+const LIGHT_POS: [f32; 4] = [2.0, 2.0, 2.0, 0.0];
+const KS: f32 = 0.15;
+const SHININESS: f32 = 128.0;
+const _PAD: u32 = 0u32;
 
 
 // =========== STRUCTS & IMPL ============
@@ -77,13 +81,10 @@ struct SimulationUniform {
     dt: f32,
     bounds: f32,
     damping: f32,
-    _pad0: f32,
+    radius: f32,
     gravity: [f32; 3],
     _pad1: f32,
 }
-
-
-
 
 impl Vertex {
     fn desc() -> wgpu::VertexBufferLayout<'static> {
@@ -114,9 +115,55 @@ impl Vertex {
     }
 }
 
+// ----- Cube Wireframe ------
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct WireframeVertex {
+    position: [f32; 3],
+    color: [f32; 3],
+}
+impl WireframeVertex {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<WireframeVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+            ],
+        }
+    }
+}
+fn create_cube_wireframe(bounds: f32) -> (Vec<WireframeVertex>, Vec<u32>) {
+    let b = bounds;
+    let vertices = vec![
+        WireframeVertex { position: [-b, -b, -b], color: WIREFRAME_COLOR },
+        WireframeVertex { position: [ b, -b, -b], color: WIREFRAME_COLOR },
+        WireframeVertex { position: [ b,  b, -b], color: WIREFRAME_COLOR },
+        WireframeVertex { position: [-b,  b, -b], color: WIREFRAME_COLOR },
+        WireframeVertex { position: [-b, -b,  b], color: WIREFRAME_COLOR },
+        WireframeVertex { position: [ b, -b,  b], color: WIREFRAME_COLOR },
+        WireframeVertex { position: [ b,  b,  b], color: WIREFRAME_COLOR },
+        WireframeVertex { position: [-b,  b,  b], color: WIREFRAME_COLOR },
+    ];
 
+    // 12 edges as line list (each edge = 2 indices)
+    let indices = vec![
+        0, 1, 1, 2, 2, 3, 3, 0,  // back face
+        4, 5, 5, 6, 6, 7, 7, 4,  // front face
+        0, 4, 1, 5, 2, 6, 3, 7,  // connecting edges
+    ];
 
-
+    (vertices, indices)
+}
 
 // ========== APP ==============
 pub struct ParticleSimApp {
@@ -132,6 +179,12 @@ pub struct ParticleSimApp {
     light_bind_group: wgpu::BindGroup,
     light_buffer: wgpu::Buffer,
     fps: f32,
+
+    // cube wireframe
+    wireframe_pipeline: wgpu::RenderPipeline,
+    cube_vertex_buffer: wgpu::Buffer,
+    cube_index_buffer: wgpu::Buffer,
+    cube_index_count: u32,
 
     // Instancing
     instance_buffer: wgpu::Buffer,
@@ -166,13 +219,12 @@ impl ParticleSimApp {
         // 1. Generate geometry
         let (vertices, indices, num_indices) = Self::create_sphere_geometry();
 
-
         // 2. gpu buff
         let vertex_buffer = Self::create_vertex_buffer(context, &vertices);
         let index_buffer = Self::create_index_buffer(context, &indices);
 
         // 2.x Instance buffer
-        let instance_count: u32 = 5;
+        let instance_count: u32 = NUM_PARTICLES;
         let instances = Self::generate_instances(instance_count);
         let instance_buffer = Self::create_instance_buffer(context, &instances);  // then called in render pipeline !
 
@@ -184,7 +236,6 @@ impl ParticleSimApp {
             - GROUP(2) Light Layout
             */ 
         let camera_bind_group_layout = context.device().create_bind_group_layout(&CameraUniform::desc());
-
         let texture_bind_group_layout = Self::create_texture_bind_group_layout(context);
 
 
@@ -219,6 +270,23 @@ impl ParticleSimApp {
         let (sim_uniform_buffer, compute_bind_group) = Self::create_compute_resources(context, &compute_bind_group_layout, &instance_buffer);
         let compute_pipeline = Self::create_compute_pipeline(context, &compute_bind_group_layout);
 
+        // 9. Cube Wireframe (from wgpu-bootstrap example)
+        let (cube_verts, cube_indices) = create_cube_wireframe(BOUNDS);
+        let cube_vertex_buffer = context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Cube Vertex Buffer"),
+            contents: bytemuck::cast_slice(&cube_verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let cube_index_buffer = context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Cube Index Buffer"),
+            contents: bytemuck::cast_slice(&cube_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let cube_index_count = cube_indices.len() as u32;
+        let wireframe_pipeline = Self::create_wireframe_pipeline(context, &camera_bind_group_layout);
+
+
+
 
 
         Self {
@@ -234,6 +302,12 @@ impl ParticleSimApp {
             light_bind_group,
             light_buffer,
             fps: 0.0,
+
+            // cube wireframe
+            wireframe_pipeline,
+            cube_vertex_buffer,
+            cube_index_buffer,
+            cube_index_count,
 
             // Instancing
             instance_buffer,
@@ -283,6 +357,71 @@ impl ParticleSimApp {
         (vertices, indices, num_indices)
     }
 
+    // 1.2 Cube Wireframe
+    fn create_wireframe_pipeline(
+        context: &Context,
+        camera_layout: &wgpu::BindGroupLayout,
+        ) -> wgpu::RenderPipeline {
+        let shader_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(WIREFRAME_SHADER_FILE);
+        let shader_src = std::fs::read_to_string(&shader_path)
+            .expect("failed to read wireframe shader");
+        let shader = context.device().create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("wireframe_shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_src.into()),
+        });
+    
+        let pipeline_layout = context.device().create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("wireframe_layout"),
+            bind_group_layouts: &[camera_layout],
+            push_constant_ranges: &[],
+        });
+    
+        context.device().create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("wireframe_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: &[WireframeVertex::desc()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: context.format(),
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: context.depth_stencil_format(),
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        })
+    }
+
+
     // 2. Buffers
     fn create_vertex_buffer(context: &Context, vertices: &[Vertex]) -> wgpu::Buffer {
         context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -312,18 +451,18 @@ impl ParticleSimApp {
         let mut out = Vec::with_capacity(count as usize);
 
         let actual_radius = RADIUS * PARTICLE_SCALE;
-        let diameter = 2.0 * actual_radius;
-        let gap = 0.5 * diameter;
-        let spacing = diameter + gap;
-        let start_x = -0.5 * (count as f32 - 1.0) * spacing;
+        // let diameter = 2.0 * actual_radius;
+        // let gap = 0.5 * diameter;
+        // let spacing = diameter + gap;
+        // let start_x = -0.5 * (count as f32 - 1.0) * spacing;
 
         for i in 0..count {
-            let x = start_x + i as f32 * spacing;
-            let y = actual_radius; // posé au-dessus du plan Y=0 si tu en as un
+            let x = 0.0;
+            let y = actual_radius;
             let z = 0.0;
 
             // Initial speed
-            let speed = 10.0;
+            let speed = INITIAL_SPEED;
             let vx = rng.gen_range(-speed..speed);
             let vy = rng.gen_range(-speed..speed);
             let vz = rng.gen_range(-speed..speed);
@@ -652,7 +791,8 @@ impl ParticleSimApp {
             dt: TIME_SCALE,
             bounds: BOUNDS,
             damping: DAMPING,
-            _pad0: 0.0,
+            radius: RADIUS * PARTICLE_SCALE,
+            // _pad0: 0.0,
             gravity: GRAVITY,
             _pad1: 0.0,
         };
@@ -757,9 +897,10 @@ impl ParticleSimApp {
 
 impl App for ParticleSimApp {
     fn render(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+
+        // ===== Render Speres =====
         // Set pipeline
         render_pass.set_pipeline(&self.render_pipeline);
-
         // Set buffers
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
@@ -768,9 +909,16 @@ impl App for ParticleSimApp {
         render_pass.set_bind_group(0, self.camera.bind_group(), &[]);
         render_pass.set_bind_group(1, &self.texture_bind_group, &[]);
         render_pass.set_bind_group(2, &self.light_bind_group, &[]);
-
         // Draw
         render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instance_count);
+
+        // ===== Render Cube Wireframe =====
+        render_pass.set_pipeline(&self.wireframe_pipeline);
+        render_pass.set_vertex_buffer(0, self.cube_vertex_buffer.slice(..));
+        render_pass.set_index_buffer(self.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        render_pass.set_bind_group(0, self.camera.bind_group(), &[]);
+        render_pass.draw_indexed(0..self.cube_index_count, 0, 0..1);
+
     }
 
     fn render_gui(&mut self, egui_ctx: &egui::Context, context: &Context) {
@@ -779,7 +927,7 @@ impl App for ParticleSimApp {
             // Radius slider
             ui.heading("Camera");
             let mut zoom = self.camera.radius();
-            if ui.add(egui::Slider::new(&mut zoom, 15.0..=50.0).text("Zoom")).changed() {
+            if ui.add(egui::Slider::new(&mut zoom, 15.0..=100.0).text("Zoom")).changed() {
                 self.camera.set_radius(zoom).update(context);
             }
 
@@ -822,19 +970,12 @@ impl App for ParticleSimApp {
             
             // ui.separator();
             
-
+            ui.separator();
 
             // FPS
             ui.label(format!("FPS: {}", self.fps.round()));
             // Other
-
-            // Debug
-            ui.separator();
-            ui.heading("Debug");
             ui.label(format!("Instance count: {}", self.instance_count));
-            // ui.label(format!("Bounds: {:.2}", self.bounds));
-
-
 
         });
     }
@@ -852,7 +993,8 @@ impl App for ParticleSimApp {
             dt: self.time_scale * delta_time,
             bounds: self.bounds,
             damping: self.damping,
-            _pad0: 0.0,
+            radius: RADIUS * PARTICLE_SCALE,
+            // _pad0: 0.0,
             gravity: self.gravity,
             _pad1: 0.0,
         };

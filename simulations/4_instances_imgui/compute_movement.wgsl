@@ -8,12 +8,12 @@
 
 
 struct SimulationData {
-    dt: f32,                // 60fps -> ~0.016f
+    dt: f32,                // 60fps eq. 0.016f
     bounds: f32,
     damping: f32,
-    _pad: f32,
+    radius: f32,
     gravity: vec3<f32>,
-    _pad2: f32,
+    _pad1: f32,
 }
 
 struct Particle {
@@ -63,19 +63,42 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     particle.model_matrix[3][1] = pos.y;
     particle.model_matrix[3][2] = pos.z;
     
-    // Bound checks + damping
-    if (abs(pos.x) > sim_data.bounds) {
-        particle.velocity.x *= -sim_data.damping;  // bounce with damping
-        particle.model_matrix[3][0] = sign(pos.x) * sim_data.bounds;
+
+
+    // ===============================
+    //     Bound checks + damping
+    // ===============================
+    let r = sim_data.radius;
+    // X
+    if (pos.x < -sim_data.bounds + r && particle.velocity.x < 0.0) {
+        pos.x = -sim_data.bounds + r;
+        particle.velocity.x = -particle.velocity.x;
     }
-    if (abs(pos.y) > sim_data.bounds) {
-        particle.velocity.y *= -sim_data.damping;
-        particle.model_matrix[3][1] = sign(pos.y) * sim_data.bounds;
+    if (pos.x > sim_data.bounds - r && particle.velocity.x > 0.0) {
+        pos.x = sim_data.bounds - r;
+        particle.velocity.x = -particle.velocity.x;
     }
-    if (abs(pos.z) > sim_data.bounds) {
-        particle.velocity.z *= -sim_data.damping;
-        particle.model_matrix[3][2] = sign(pos.z) * sim_data.bounds;
+
+    // Y
+    if (pos.y < -sim_data.bounds + r && particle.velocity.y < 0.0) {
+        pos.y = -sim_data.bounds + r;
+        particle.velocity.y = -particle.velocity.y;
     }
+    if (pos.y > sim_data.bounds - r && particle.velocity.y > 0.0) {
+        pos.y = sim_data.bounds - r;
+        particle.velocity.y = -particle.velocity.y;
+    }
+
+    // Z
+    if (pos.z < -sim_data.bounds + r && particle.velocity.z < 0.0) {
+        pos.z = -sim_data.bounds + r;
+        particle.velocity.z = -particle.velocity.z;
+    }
+    if (pos.z > sim_data.bounds - r && particle.velocity.z > 0.0) {
+        pos.z = sim_data.bounds - r;
+        particle.velocity.z = -particle.velocity.z;
+    }
+
 
     // Write updated particle back
     particles[index] = particle;
