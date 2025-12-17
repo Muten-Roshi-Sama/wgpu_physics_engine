@@ -301,40 +301,42 @@ impl ParticleSimApp {
                 - spaced out along x axis
          */
         use cgmath::{Matrix4, Vector3, Deg};
-        use rand::Rng;
-        let mut rng = rand::rng();
+        // use rand::Rng;
+        // let mut rng = rand::rng();
+        // let mut out = Vec::with_capacity(count as usize);
+
+        let actual_radius = RADIUS * PARTICLE_SCALE;
+        let diameter = 2.0 * actual_radius;
+        let gap = 0.5 * diameter;
+        let spacing = diameter + gap;
+        let start_x = -0.5 * (count as f32 - 1.0) * spacing;
         let mut out = Vec::with_capacity(count as usize);
 
         for i in 0..count {
-            let x = (i as f32 - count as f32 / 2.0) * 2.0 + rng.random_range(-0.5..0.5);
-            let y = 5.0 + (i as f32) * 1.5 + rng.random_range(-0.5..0.5);  // ← Spread vertically
-            let z = rng.random_range(-1.0..1.0);
+        let x = start_x + i as f32 * spacing;
+        let y = actual_radius; // posé au-dessus du plan Y=0 si tu en as un
+        let z = 0.0;
 
-            let trans = Matrix4::from_translation(Vector3::new(x, y, z));
-            let rot = Matrix4::from_angle_y(Deg(0.0));
-            let scale = Matrix4::from_scale(PARTICLE_SCALE);
-            let model = trans * rot * scale;
+        let trans = Matrix4::from_translation(Vector3::new(x, y, z));
+        let scale = Matrix4::from_scale(PARTICLE_SCALE);
+        let model = trans * scale;
 
-            let c0 = model.x;
-            let c1 = model.y;
-            let c2 = model.z;
-            let c3 = model.w;
+        let c0 = model.x;
+        let c1 = model.y;
+        let c2 = model.z;
+        let c3 = model.w;
 
-            // Random initial velocity
-            let vx = rng.random_range(-1.0..1.0);
-            let vy = rng.random_range(-1.0..1.0);
-            let vz = rng.random_range(-1.0..1.0);
+        out.push(Particle {
+            model_matrix: [
+                c0.x, c0.y, c0.z, c0.w,
+                c1.x, c1.y, c1.z, c1.w,
+                c2.x, c2.y, c2.z, c2.w,
+                c3.x, c3.y, c3.z, c3.w,
+            ],
+            velocity: [0.0, 0.0, 0.0, 0.0], // pas de mouvement
+        });
+    }
 
-            out.push(Particle {
-                model_matrix: [
-                    c0.x, c0.y, c0.z, c0.w,
-                    c1.x, c1.y, c1.z, c1.w,
-                    c2.x, c2.y, c2.z, c2.w,
-                    c3.x, c3.y, c3.z, c3.w,
-                ],
-                velocity: [vx, vy, vz, 0.0],
-            });
-        }
         out
     }
 
@@ -861,7 +863,7 @@ impl App for ParticleSimApp {
         //     bytemuck::bytes_of(&sim_uniform),
         // );
 
-        self.dispatch_compute(context);
+        // self.dispatch_compute(context);
 
     }
 

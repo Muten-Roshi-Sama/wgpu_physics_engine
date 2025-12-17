@@ -64,18 +64,18 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     particle.model_matrix[3][2] = pos.z;
     
     // Bound checks + damping
-    // if (abs(pos.x) > sim_data.bounds) {
-    //     particle.velocity.x *= -sim_data.damping;  // bounce with damping
-    //     particle.model_matrix[3][0] = sign(pos.x) * sim_data.bounds;
-    // }
-    // if (abs(pos.y) > sim_data.bounds) {
-    //     particle.velocity.y *= -sim_data.damping;
-    //     particle.model_matrix[3][1] = sign(pos.y) * sim_data.bounds;
-    // }
-    // if (abs(pos.z) > sim_data.bounds) {
-    //     particle.velocity.z *= -sim_data.damping;
-    //     particle.model_matrix[3][2] = sign(pos.z) * sim_data.bounds;
-    // }
+    if (abs(pos.x) > sim_data.bounds) {
+        particle.velocity.x *= -sim_data.damping;  // bounce with damping
+        particle.model_matrix[3][0] = sign(pos.x) * sim_data.bounds;
+    }
+    if (abs(pos.y) > sim_data.bounds) {
+        particle.velocity.y *= -sim_data.damping;
+        particle.model_matrix[3][1] = sign(pos.y) * sim_data.bounds;
+    }
+    if (abs(pos.z) > sim_data.bounds) {
+        particle.velocity.z *= -sim_data.damping;
+        particle.model_matrix[3][2] = sign(pos.z) * sim_data.bounds;
+    }
 
     // Write updated particle back
     particles[index] = particle;
