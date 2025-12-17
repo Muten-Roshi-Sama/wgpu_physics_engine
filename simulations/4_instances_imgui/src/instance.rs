@@ -14,11 +14,15 @@ use wgpu_bootstrap::{
 const SHADER_FILE: &str = "instances_shader.wgsl";
 const COMPUTE_SHADER_FILE: &str = "compute_movement.wgsl";
 
-const TEXTURE_FILE: &str = "../../textures/grey.png";
+const TEXTURE_FILE: &str = "../../textures/red.png";
+// const TEXTURE_FILE: &str = "../../textures/grey.png";
 // const TEXTURE_FILE: &str = "../../textures/texture.png";
 // const TEXTURE_FILE: &str = "../../textures/earth2048.bmp";
 // const TEXTURE_FILE: &str = "../../textures/moon1024.bmp";
 
+
+// Camera
+const DEFAULT_ZOOM: f32 = 40.0;
 
 // Specular light parameters
 const LIGHT_POS: [f32; 4] = [2.0, 2.0, 2.0, 0.0];
@@ -33,11 +37,12 @@ const SECTOR_COUNT: usize = 128;
 
 // Physics
 const NUM_PARTICLES: u32 = 5;
-const PARTICLE_SCALE : f32 = 0.1;
+const PARTICLE_SCALE : f32 = 1.0;
 const TIME_SCALE: f32 = 1.0;
+// const GRAVITY: [f32; 3] = [0.0, 0.0, 0.0];
 const GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
-const BOUNDS: f32 = 30.0;
-const DAMPING: f32 = 0.8;
+const BOUNDS: f32 = 5.0;
+const DAMPING: f32 = 0.95;
 
 
 // =========== STRUCTS & IMPL ============
@@ -70,10 +75,11 @@ struct Particle {
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct SimulationUniform {
     dt: f32,
-    gravity: [f32; 3],
     bounds: f32,
     damping: f32,
-    _padding: [f32; 2],
+    _pad0: f32,
+    gravity: [f32; 3],
+    _pad1: f32,
 }
 
 
@@ -301,40 +307,45 @@ impl ParticleSimApp {
                 - spaced out along x axis
          */
         use cgmath::{Matrix4, Vector3, Deg};
-        // use rand::Rng;
-        // let mut rng = rand::rng();
-        // let mut out = Vec::with_capacity(count as usize);
+        use rand::Rng;
+        let mut rng = rand::rng();
+        let mut out = Vec::with_capacity(count as usize);
 
         let actual_radius = RADIUS * PARTICLE_SCALE;
         let diameter = 2.0 * actual_radius;
         let gap = 0.5 * diameter;
         let spacing = diameter + gap;
         let start_x = -0.5 * (count as f32 - 1.0) * spacing;
-        let mut out = Vec::with_capacity(count as usize);
 
         for i in 0..count {
-        let x = start_x + i as f32 * spacing;
-        let y = actual_radius; // posé au-dessus du plan Y=0 si tu en as un
-        let z = 0.0;
+            let x = start_x + i as f32 * spacing;
+            let y = actual_radius; // posé au-dessus du plan Y=0 si tu en as un
+            let z = 0.0;
 
-        let trans = Matrix4::from_translation(Vector3::new(x, y, z));
-        let scale = Matrix4::from_scale(PARTICLE_SCALE);
-        let model = trans * scale;
+            // Initial speed
+            let speed = 10.0;
+            let vx = rng.gen_range(-speed..speed);
+            let vy = rng.gen_range(-speed..speed);
+            let vz = rng.gen_range(-speed..speed);
 
-        let c0 = model.x;
-        let c1 = model.y;
-        let c2 = model.z;
-        let c3 = model.w;
+            let trans = Matrix4::from_translation(Vector3::new(x, y, z));
+            let scale = Matrix4::from_scale(PARTICLE_SCALE);
+            let model = trans * scale;
 
-        out.push(Particle {
-            model_matrix: [
-                c0.x, c0.y, c0.z, c0.w,
-                c1.x, c1.y, c1.z, c1.w,
-                c2.x, c2.y, c2.z, c2.w,
-                c3.x, c3.y, c3.z, c3.w,
-            ],
-            velocity: [0.0, 0.0, 0.0, 0.0], // pas de mouvement
-        });
+            let c0 = model.x;
+            let c1 = model.y;
+            let c2 = model.z;
+            let c3 = model.w;
+
+            out.push(Particle {
+                model_matrix: [
+                    c0.x, c0.y, c0.z, c0.w,
+                    c1.x, c1.y, c1.z, c1.w,
+                    c2.x, c2.y, c2.z, c2.w,
+                    c3.x, c3.y, c3.z, c3.w,
+                ],
+                velocity: [vx, vy, vz, 0.0],
+            });
         }
 
         out
@@ -594,7 +605,7 @@ impl ParticleSimApp {
         );
         camera
             .set_target(cgmath::point3(0.0, 0.0, 0.0))
-            .set_polar(cgmath::point3(2.0, 0.0, 0.0))
+            .set_polar(cgmath::point3(DEFAULT_ZOOM, 0.0, 0.0))
             .update(context);
         camera
     }
@@ -639,10 +650,11 @@ impl ParticleSimApp {
         ) -> (wgpu::Buffer, wgpu::BindGroup) {
         let sim_uniform = SimulationUniform {
             dt: TIME_SCALE,
-            gravity: GRAVITY,
             bounds: BOUNDS,
             damping: DAMPING,
-            _padding: [0.0, 0.0],
+            _pad0: 0.0,
+            gravity: GRAVITY,
+            _pad1: 0.0,
         };
     
         let sim_uniform_buffer = context.device().create_buffer_init(
@@ -766,12 +778,12 @@ impl App for ParticleSimApp {
 
             // Radius slider
             ui.heading("Camera");
-            let mut radius = self.camera.radius();
-            if ui.add(egui::Slider::new(&mut radius, 10.0..=2.0).text("Zoom")).changed() {  // ← swapped range
-                self.camera.set_radius(radius).update(context);
+            let mut zoom = self.camera.radius();
+            if ui.add(egui::Slider::new(&mut zoom, 15.0..=50.0).text("Zoom")).changed() {
+                self.camera.set_radius(zoom).update(context);
             }
 
-            // Light controls + SPECULAR
+            // -------- Light controls + SPECULAR ---------------
             // ui.heading("Light");
             // let mut light_changed = false;
 
@@ -788,7 +800,7 @@ impl App for ParticleSimApp {
             //     self.update_light_uniform(context);
             // }
 
-            ui.add_space(5.0);
+            // ui.add_space(5.0);
             
             
             ui.separator();
@@ -798,17 +810,17 @@ impl App for ParticleSimApp {
             ui.add(egui::Slider::new(&mut self.gravity[1], -20.0..=1.0).text("Gravity Y"));
             ui.add(egui::Slider::new(&mut self.time_scale, 0.0..=2.0).text("Time Scale"));
             ui.add(egui::Slider::new(&mut self.bounds, 1.0..=20.0).text("Bounds"));
-            ui.add(egui::Slider::new(&mut self.damping, -1.0..=0.0).text("Damping"));
+            ui.add(egui::Slider::new(&mut self.damping, 0.5..=1.0).text("Damping"));
         
 
 
             // Geometry info (read-only for now)
-            ui.heading("Geometry");
-            ui.label(format!("Stacks: {}", self.stack_count));
-            ui.label(format!("Sectors: {}", self.sector_count));
-            ui.label(format!("Vertices: {}", (self.stack_count + 1) * (self.sector_count + 1)));
+            // ui.heading("Geometry");
+            // ui.label(format!("Stacks: {}", self.stack_count));
+            // ui.label(format!("Sectors: {}", self.sector_count));
+            // ui.label(format!("Vertices: {}", (self.stack_count + 1) * (self.sector_count + 1)));
             
-            ui.separator();
+            // ui.separator();
             
 
 
@@ -820,7 +832,7 @@ impl App for ParticleSimApp {
             ui.separator();
             ui.heading("Debug");
             ui.label(format!("Instance count: {}", self.instance_count));
-            ui.label(format!("Bounds: {:.2}", self.bounds));
+            // ui.label(format!("Bounds: {:.2}", self.bounds));
 
 
 
@@ -836,22 +848,22 @@ impl App for ParticleSimApp {
         self.fps = 1.0 / delta_time;
 
 
-        // let sim_uniform = SimulationUniform {
-        //     dt: self.time_scale * delta_time,
-        //     gravity: self.gravity,
-        //     bounds: self.bounds,
-        //     damping: self.damping,
-        //     _padding: [0.0, 0.0],
-        // };
+        let sim_uniform = SimulationUniform {
+            dt: self.time_scale * delta_time,
+            bounds: self.bounds,
+            damping: self.damping,
+            _pad0: 0.0,
+            gravity: self.gravity,
+            _pad1: 0.0,
+        };
 
+        context.queue().write_buffer(
+            &self.sim_uniform_buffer,
+            0,
+            bytemuck::bytes_of(&sim_uniform),
+        );
 
-        // context.queue().write_buffer(
-        //     &self.sim_uniform_buffer,
-        //     0,
-        //     bytemuck::bytes_of(&sim_uniform),
-        // );
-
-        // self.dispatch_compute(context);
+        self.dispatch_compute(context);
 
     }
 
