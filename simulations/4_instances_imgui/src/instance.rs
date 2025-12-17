@@ -335,7 +335,7 @@ impl ParticleSimApp {
             ],
             velocity: [0.0, 0.0, 0.0, 0.0], // pas de mouvement
         });
-    }
+        }
 
         out
     }
@@ -725,12 +725,12 @@ impl ParticleSimApp {
     // ============== Update =====================
     fn update_light_uniform(&self, context: &Context) {
         // check if need to update light uniform
-        let apply_specular = if self.checkbox_specular { 0u32 } else { 1u32 };
+        let compute_specular = if self.checkbox_specular { 1u32 } else { 0u32 };
         let updated_light = LightUniform {
             light: [self.light_pos[0], self.light_pos[1], self.light_pos[2], 0.0],
             ks_shininess: [self.ks, self.shininess],
             _pad: _PAD,
-            compute_specular: apply_specular,
+            compute_specular,
         };
         context.queue().write_buffer(
             &self.light_buffer,
@@ -771,37 +771,25 @@ impl App for ParticleSimApp {
                 self.camera.set_radius(radius).update(context);
             }
 
-            // Light controls
-            ui.heading("Light");
-            let mut light_changed = false;
+            // Light controls + SPECULAR
+            // ui.heading("Light");
+            // let mut light_changed = false;
+
+            // light_changed |= ui.checkbox(&mut self.checkbox_specular, "Specular").changed();
             
-            light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[0], -5.0..=5.0).text("Light X")).changed();
-            light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[1], -5.0..=5.0).text("Light Y")).changed();
-            light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[2], -5.0..=5.0).text("Light Z")).changed();
-            
-            ui.add_space(5.0);
-            
-            // ------ SPECULAR -----
-            // if ui.checkbox(&mut self.checkbox_specular, "Specular").changed() {
-            //     light_changed = true;
-            // }
+            // // Light position + shininness
+            // light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[0], -5.0..=5.0).text("Light X")).changed();
+            // light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[1], -5.0..=5.0).text("Light Y")).changed();
+            // light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[2], -5.0..=5.0).text("Light Z")).changed();
             // light_changed |= ui.add(egui::Slider::new(&mut self.ks, 0.0..=2.0).text("Specular (ks)")).changed();
             // light_changed |= ui.add(egui::Slider::new(&mut self.shininess, 1.0..=512.0).text("Shininess")).changed();
-            // Update GPU buffer if any light param changed
+
             // if light_changed {
             //     self.update_light_uniform(context);
-            //     // let checkbox_specular_u = if self.checkbox_specular { 1u32 } else { 0u32 };
-            //     // let updated_light = LightUniform {
-            //     //     light: [self.light_pos[0], self.light_pos[1], self.light_pos[2], 0.0],
-            //     //     ks: self.ks,
-            //     //     shininess: self.shininess,
-            //     //     checkbox_specular: checkbox_specular_u,
-            //     //     _pad: 0u32,
-            //     // };
-            //     // context.queue().write_buffer(&self.light_buffer, 0, bytemuck::bytes_of(&updated_light));
             // }
 
-
+            ui.add_space(5.0);
+            
             
             ui.separator();
 

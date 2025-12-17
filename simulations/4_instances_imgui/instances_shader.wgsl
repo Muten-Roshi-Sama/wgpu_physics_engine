@@ -71,40 +71,45 @@ fn vs_main(in: VertexInput, particle: Particles) -> VertexOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     
+    let sampledColor = textureSample(diffuse_tex, diffuse_samp, in.uv);
+    return vec4<f32>(sampledColor.xyz, 1.0);
 
-    // ========= Vectors ============
-    let light_pos_view: vec3<f32> = (params.view * vec4<f32>(light_uni.light.xyz, 1.0)).xyz; // Light position in view space
-    let l: vec3<f32> = normalize(light_pos_view - in.position);
-    let n: vec3<f32> = normalize(in.normal);  // N: the normal vector to the surface.
-    let v: vec3<f32> = normalize(-in.position);
+    // DIFFUSE + SPECULAR LIGHTING -- NOT USED HERE
 
 
-    // --- Diffuse light model
-    let ambient : f32 = 0.1;
-    let luminosity: f32 = 2.4;
-    let shading: f32 = clamp(dot(n, l), ambient, 1.0);
-    let color =  textureSample(diffuse_tex, diffuse_samp, in.uv);
-    let diffuse = color.xyz * shading * luminosity;
-
-    // --- Early return if no specular component
-    if (light_uni.compute_specular == 0u) {
-        return vec4<f32>(diffuse, 1.0);
-    }
+    // // ========= Vectors ============
+    // let light_pos_view: vec3<f32> = (params.view * vec4<f32>(light_uni.light.xyz, 1.0)).xyz; // Light position in view space
+    // let l: vec3<f32> = normalize(light_pos_view - in.position);
+    // let n: vec3<f32> = normalize(in.normal);  // N: the normal vector to the surface.
+    // let v: vec3<f32> = normalize(-in.position);
 
 
-    // --- Specular Light
-        // Reflection (incident = -L)
-    let r: vec3<f32> = normalize(reflect(-l, n));      // or 2.0 * dot(n, l) * n - l);   // -L is the incident vector !
-    let alpha: f32 = light_uni.ks_shininess.y;        // shininess exponent
-    let ks: f32 = light_uni.ks_shininess.x;          // spec strength
-    let r_dot_v: f32 = max(dot(r, v), 0.0);         // spec angle (see graph)
-    let light_color =  vec3<f32>(1.0, 1.0, 1.0);   // Reflected light color
-    let spec: vec3<f32> = ks * pow(r_dot_v, alpha) * light_color;    // I_s = ks * (R·V)^α * C_L
+    // // --- Diffuse light model
+    // let ambient : f32 = 0.1;
+    // let luminosity: f32 = 2.4;
+    // let shading: f32 = clamp(dot(n, l), ambient, 1.0);
+    // let color =  textureSample(diffuse_tex, diffuse_samp, in.uv);
+    // let diffuse = color.xyz * shading * luminosity;
 
-    // 3. Combine Specular + diffuse
-    let result: vec3<f32> = spec + diffuse;
+    // // --- Early return if no specular component
+    // if (light_uni.compute_specular == 0u) {
+    //     return vec4<f32>(diffuse, 1.0);
+    // }
 
-    return vec4<f32>(result, 1.0);
+
+    // // --- Specular Light
+    //     // Reflection (incident = -L)
+    // let r: vec3<f32> = normalize(reflect(-l, n));      // or 2.0 * dot(n, l) * n - l);   // -L is the incident vector !
+    // let alpha: f32 = light_uni.ks_shininess.y;        // shininess exponent
+    // let ks: f32 = light_uni.ks_shininess.x;          // spec strength
+    // let r_dot_v: f32 = max(dot(r, v), 0.0);         // spec angle (see graph)
+    // let light_color =  vec3<f32>(1.0, 1.0, 1.0);   // Reflected light color
+    // let spec: vec3<f32> = ks * pow(r_dot_v, alpha) * light_color;    // I_s = ks * (R·V)^α * C_L
+
+    // // 3. Combine Specular + diffuse
+    // let result: vec3<f32> = spec + diffuse;
+
+    // return vec4<f32>(result, 1.0);
 }
 
 
