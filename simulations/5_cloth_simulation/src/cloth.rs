@@ -1,4 +1,4 @@
-// instance.rs
+// render_cube_textured.rs
 use std::path::Path;
 
 
@@ -9,29 +9,63 @@ use wgpu_bootstrap::{
     App, Context,
 };
 
+// TODO:
+    // 1. re-implement globe render
+    // 2. add instances of clothe particles
+    // 3. add compute forces (spring, gravity)for those particles
+
+
+
+
+// ----------------- Technical Overview ----------------------------
+
+// M1 : Cloth is globe particles with additional forces between them (springs) 
+// M2 : Cloth is single mesh 
+
+// ============= Methoology 1 ================
+
+    // globe_shader.wgsl : render globe
+    // cloth_instances.wgsl : render cloth
+
+    // forces.wgsl : compute forces on cloth particles + collision with globe
+    // compute.wgsl : update cloth particles positions and velocities based on forces
+
+    // RENDER PIPELINES :
+        // globe render pipeline
+        // cloth render pipeline
+
+// ============= Methoology 2 ================
+
+// add explanations here later
+
+
+// RENDER PIPELINES :
+    // 1 pipeline for cloth and globe
+
+
+
+
+// --------------------------------------------
+
 // =========== CONFIGURATIONS =============
 
-const SHADER_FILE: &str = "instances_shader.wgsl";
-const WIREFRAME_SHADER_FILE: &str = "wireframe_shader.wgsl";
+const GLOBE_SHADER_FILE: &str = "globe_shader.wgsl";
+const CLOTH_SHADER_FILE: &str = "cloth_shader.wgsl";
 const COMPUTE_SHADER_FILE: &str = "compute_movement.wgsl";
 
-const TEXTURE_FILE: &str = "../../textures/red.png";
-// const TEXTURE_FILE: &str = "../../textures/grey.png";
 // const TEXTURE_FILE: &str = "../../textures/texture.png";
 // const TEXTURE_FILE: &str = "../../textures/earth2048.bmp";
 // const TEXTURE_FILE: &str = "../../textures/moon1024.bmp";
+const TEXTURE_FILE: &str = "../../textures/grey.png";
 
-
-// Camera
-const DEFAULT_ZOOM: f32 = 40.0;
-
-// Cube Wireframe
-const WIREFRAME_COLOR: [f32; 3] = [0.0, 0.0, 1.0]; // bleu
-const BOUNDS: f32 = 10.0;
+// Specular light parameters
+const LIGHT_POS: [f32; 4] = [2.0, 2.0, 2.0, 0.0];
+const KS: f32 = 0.15;
+const SHININESS: f32 = 128.0;
+const _PAD: [f32;2] = [0.0, 0.0];
 
 // Globe geometry
 const RADIUS: f32 = 1.0;
-const INITIAL_SPEED: f32 = 20.0;
 const STACK_COUNT: usize = 64;
 const SECTOR_COUNT: usize = 128;
 
@@ -40,13 +74,22 @@ const NUM_PARTICLES: u32 = 10;
 const PARTICLE_SCALE : f32 = 1.0;
 const TIME_SCALE: f32 = 1.0;
 const GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
-const DAMPING: f32 = 0.95;
+// const DAMPING: f32 = 0.95;
 
-// NOT USED HERE ---- Specular light parameters
-const LIGHT_POS: [f32; 4] = [2.0, 2.0, 2.0, 0.0];
-const KS: f32 = 0.15;
-const SHININESS: f32 = 128.0;
-const _PAD: u32 = 0u32;
+// Cloth 
+const CLOTH_SIZE: f32 = 5.0;
+const CLOTH_POS: [f32;3] = [0.0, 2.0, 0.0];
+const MASS: f32 = 10.0;
+
+// Springs
+const VERTEX_MASS: f32 = 0.16;
+const STRUCTURAL_STIFFNESS: f32 = 150.0;
+const SHEAR_STIFFNESS: f32 = 5.0;
+const BEND_STIFFNESS: f32 = 15.0;
+const STRUCTURAL_DAMPING: f32 = 1.5;
+const SHEAR_DAMPING: f32 = 0.05;
+const BEND_DAMPING: f32 = 0.15;
+
 
 
 // =========== STRUCTS & IMPL ============
@@ -61,29 +104,10 @@ struct Vertex {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct LightUniform {
-    light: [f32; 4],          // maps to vec4<f32> in WGSL
-    ks_shininess: [f32; 2],  // specular strength & shininess exponent
-    _pad: u32,              // padding to 16-byte alignment
-    compute_specular: u32, // whether to use specular component
-}
-
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct Particle {
-    model_matrix: [f32; 16],  // 4x4 matrix
-    velocity: [f32; 4],       // velocity vector (x, y, z, w)
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct SimulationUniform {
-    dt: f32,
-    bounds: f32,
-    damping: f32,
-    radius: f32,
-    gravity: [f32; 3],
-    _pad1: f32,
+    light: [f32; 4],   // maps to vec4<f32> in WGSL
+    ks: f32,           // specular strength
+    shininess: f32,    // shininess exponent
+    _pad: [f32; 2],    // padding to 16-byte alignment
 }
 
 impl Vertex {
@@ -115,58 +139,29 @@ impl Vertex {
     }
 }
 
-// ----- Cube Wireframe ------
+
+
+
+
+// CLOTH
 #[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct WireframeVertex {
-    position: [f32; 3],
-    color: [f32; 3],
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct SimulationUniform {
+    dt: f32,
+    // bounds: f32,
+    // damping: f32,
+    radius: f32,
+    gravity: [f32; 3],
+    _pad1: f32,
 }
-impl WireframeVertex {
-    fn desc() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<WireframeVertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-            ],
-        }
-    }
-}
-fn create_cube_wireframe(bounds: f32) -> (Vec<WireframeVertex>, Vec<u32>) {
-    let b = bounds;
-    let vertices = vec![
-        WireframeVertex { position: [-b, -b, -b], color: WIREFRAME_COLOR },
-        WireframeVertex { position: [ b, -b, -b], color: WIREFRAME_COLOR },
-        WireframeVertex { position: [ b,  b, -b], color: WIREFRAME_COLOR },
-        WireframeVertex { position: [-b,  b, -b], color: WIREFRAME_COLOR },
-        WireframeVertex { position: [-b, -b,  b], color: WIREFRAME_COLOR },
-        WireframeVertex { position: [ b, -b,  b], color: WIREFRAME_COLOR },
-        WireframeVertex { position: [ b,  b,  b], color: WIREFRAME_COLOR },
-        WireframeVertex { position: [-b,  b,  b], color: WIREFRAME_COLOR },
-    ];
 
-    // 12 edges as line list (each edge = 2 indices)
-    let indices = vec![
-        0, 1, 1, 2, 2, 3, 3, 0,  // back face
-        4, 5, 5, 6, 6, 7, 7, 4,  // front face
-        0, 4, 1, 5, 2, 6, 3, 7,  // connecting edges
-    ];
 
-    (vertices, indices)
-}
+
+
+
 
 // ========== APP ==============
-pub struct ParticleSimApp {
+pub struct ClothSimApp {
     // Rendering
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
@@ -180,53 +175,28 @@ pub struct ParticleSimApp {
     light_buffer: wgpu::Buffer,
     fps: f32,
 
-    // cube wireframe
-    wireframe_pipeline: wgpu::RenderPipeline,
-    cube_vertex_buffer: wgpu::Buffer,
-    cube_index_buffer: wgpu::Buffer,
-    cube_index_count: u32,
-
-    // Instancing
-    instance_buffer: wgpu::Buffer,
-    instance_count: u32,
-
-    // Computing
-    compute_pipeline: wgpu::ComputePipeline,
-    compute_bind_group: wgpu::BindGroup,
-    sim_uniform_buffer: wgpu::Buffer,
-
     // Eframe
     light_pos: [f32; 3],
-    checkbox_specular: bool,   // ui checkbox
     ks: f32,
     shininess: f32,
-
-    // Physics
-    time_scale:f32,
-    gravity: [f32;3],
-    bounds: f32,
-    damping: f32,
-
-
-    // geometry
     stack_count: usize,   // TODO: for now, display only....
     sector_count: usize,  // TODO: ... regenerating requires rebuilding buffers
 }
 
-impl ParticleSimApp {
+impl ClothSimApp {
     pub fn new(context: &Context) -> Self {
 
         // 1. Generate geometry
         let (vertices, indices, num_indices) = Self::create_sphere_geometry();
+        // let (cloth_vertices, cloth_indices, _num_cloth_indices) = Self::create_cloth_geometry();
 
         // 2. gpu buff
         let vertex_buffer = Self::create_vertex_buffer(context, &vertices);
         let index_buffer = Self::create_index_buffer(context, &indices);
-
-        // 2.x Instance buffer
-        let instance_count: u32 = NUM_PARTICLES;
-        let instances = Self::generate_instances(instance_count);
-        let instance_buffer = Self::create_instance_buffer(context, &instances);  // then called in render pipeline !
+        //
+        // let cloth_vertex_buffer = Self::create_vertex_buffer(context, &cloth_vertices);
+        // let cloth_index_buffer = Self::create_index_buffer(context, &cloth_indices);
+        // let cloth_velocities_buffer = Self::create_storage_buffer(context, &[]); // TODO: fill with velocities
 
 
         // 3. Bind Groups lyouts   
@@ -261,82 +231,41 @@ impl ParticleSimApp {
             &texture_bind_group_layout,
             &light_bind_group_layout,
         );
+        // let cloth_pipeline = Self::create_cloth_render_pipeline(
+        //     context,
+        //     &camera_bind_group_layout,
+        //     &texture_bind_group_layout,
+        // );
 
         // 7. Camera
         let camera = Self::setup_camera(context);
 
         // 8. Compute Setup
-        let compute_bind_group_layout = Self::create_compute_bind_group_layout(context);
-        let (sim_uniform_buffer, compute_bind_group) = Self::create_compute_resources(context, &compute_bind_group_layout, &instance_buffer);
-        let compute_pipeline = Self::create_compute_pipeline(context, &compute_bind_group_layout);
-
-        // 9. Cube Wireframe (from wgpu-bootstrap example)
-        let (cube_verts, cube_indices) = create_cube_wireframe(BOUNDS);
-        let cube_vertex_buffer = context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Cube Vertex Buffer"),
-            contents: bytemuck::cast_slice(&cube_verts),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let cube_index_buffer = context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Cube Index Buffer"),
-            contents: bytemuck::cast_slice(&cube_indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-        let cube_index_count = cube_indices.len() as u32;
-        let wireframe_pipeline = Self::create_wireframe_pipeline(context, &camera_bind_group_layout);
-
-
+        // let compute_bind_group_layout = Self::create_compute_bind_group_layout(context);
+        // let (sim_uniform_buffer, compute_bind_group) = Self::create_compute_resources(context, &compute_bind_group_layout, &instance_buffer);
+        // let compute_pipeline = Self::create_compute_pipeline(context, &compute_bind_group_layout);
 
 
 
         Self {
-            // Rendering
             vertex_buffer,
             index_buffer,
             render_pipeline,
             num_indices,
-
-            // Bind gorups
             camera,
             texture_bind_group,
             light_bind_group,
             light_buffer,
             fps: 0.0,
-
-            // cube wireframe
-            wireframe_pipeline,
-            cube_vertex_buffer,
-            cube_index_buffer,
-            cube_index_count,
-
-            // Instancing
-            instance_buffer,
-            instance_count,
-            // Compute movement for instances
-            compute_pipeline,
-            compute_bind_group,
-            sim_uniform_buffer,
-
-            // Eframe
             light_pos: [LIGHT_POS[0], LIGHT_POS[1], LIGHT_POS[2]],
-            checkbox_specular:false,
             ks: KS,
             shininess: SHININESS,
-
-            // Physics
-            time_scale: TIME_SCALE,
-            gravity: GRAVITY,
-            bounds: BOUNDS,
-            damping: DAMPING,
-
-            // geometry
             stack_count: STACK_COUNT,
             sector_count: SECTOR_COUNT,
         }
 
     // --- end of new() ---
     }
-
 
 
     // =============================================
@@ -357,70 +286,55 @@ impl ParticleSimApp {
         (vertices, indices, num_indices)
     }
 
-    // 1.2 Cube Wireframe
-    fn create_wireframe_pipeline(
-        context: &Context,
-        camera_layout: &wgpu::BindGroupLayout,
-        ) -> wgpu::RenderPipeline {
-        let shader_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(WIREFRAME_SHADER_FILE);
-        let shader_src = std::fs::read_to_string(&shader_path)
-            .expect("failed to read wireframe shader");
-        let shader = context.device().create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("wireframe_shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_src.into()),
-        });
-    
-        let pipeline_layout = context.device().create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("wireframe_layout"),
-            bind_group_layouts: &[camera_layout],
-            push_constant_ranges: &[],
-        });
-    
-        context.device().create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("wireframe_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: "vs_main",
-                buffers: &[WireframeVertex::desc()],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: context.format(),
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: context.depth_stencil_format(),
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-            cache: None,
-        })
-    }
+    // fn create_cloth_geometry() -> (Vec<Vertex>, Vec<u32>, u32) {
 
+    //     let mut cloth_vertices = Vec::new();
+    //     let mut cloth_indices: Vec<u16> = Vec::new();
+
+    //     // create the vertices
+    //     for i in 0..N_CLOTH_VERTICES_PER_ROW {
+    //         for j in 0..N_CLOTH_VERTICES_PER_ROW {
+    //             cloth_vertices.push(Vertex {
+    //                 position: [
+    //                     CLOTH_CENTER_X + i as f32 * (CLOTH_SIZE / (N_CLOTH_VERTICES_PER_ROW - 1) as f32) - (CLOTH_SIZE / 2.0),
+    //                     CLOTH_CENTER_Y,
+    //                     CLOTH_CENTER_Z + j as f32 * (CLOTH_SIZE / (N_CLOTH_VERTICES_PER_ROW - 1) as f32) - (CLOTH_SIZE / 2.0),
+    //                 ],
+    //                 normal: [0.0, 0.0, 0.0],
+    //                 tangent: [0.0, 0.0, 0.0],
+    //                 tex_coords: [
+    //                     i as f32 * (1.0 / (N_CLOTH_VERTICES_PER_ROW - 1) as f32),
+    //                     j as f32 * (1.0 / (N_CLOTH_VERTICES_PER_ROW - 1) as f32),
+    //                 ],
+    //             });
+    //         }
+    //     }
+
+    //     // create the indices
+    //     for i in 0..N_CLOTH_VERTICES_PER_ROW - 1 {
+    //         for j in 0..N_CLOTH_VERTICES_PER_ROW - 1 {
+    //             // first triangle
+    //             cloth_indices.push((i * N_CLOTH_VERTICES_PER_ROW + j) as u16);
+    //             cloth_indices.push((i * N_CLOTH_VERTICES_PER_ROW + j + 1) as u16);
+    //             cloth_indices.push(((i + 1) * N_CLOTH_VERTICES_PER_ROW + j) as u16);
+    //             // second triangle
+    //             cloth_indices.push((i * N_CLOTH_VERTICES_PER_ROW + j + 1) as u16);
+    //             cloth_indices.push(((i + 1) * N_CLOTH_VERTICES_PER_ROW + j + 1) as u16);
+    //             cloth_indices.push(((i + 1) * N_CLOTH_VERTICES_PER_ROW + j) as u16);
+    //         }
+    //     }
+
+    //     // set the default speed of the cloth
+    //     let mut cloth_velocities: Vec<Velocity> = Vec::new();
+    //     for _i in cloth_vertices.iter_mut() {
+    //         cloth_velocities.push(Velocity {
+    //             velocity: [0.0, 0.0, 0.0],
+    //         });
+    //     }
+    //     // Return
+    //     let num__cloth_indices = cloth_indices.len() as u32;
+    //     (cloth_vertices, cloth_indices, num_cloth_indices)
+    // }
 
     // 2. Buffers
     fn create_vertex_buffer(context: &Context, vertices: &[Vertex]) -> wgpu::Buffer {
@@ -430,7 +344,6 @@ impl ParticleSimApp {
             usage: wgpu::BufferUsages::VERTEX,
         })
     }
-    
     fn create_index_buffer(context: &Context, indices: &[u32]) -> wgpu::Buffer {
         context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Index Buffer"),
@@ -438,81 +351,13 @@ impl ParticleSimApp {
             usage: wgpu::BufferUsages::INDEX,
         })
     }
-
-    // 2.x Instance buffer
-    fn generate_instances(count: u32) -> Vec<Particle> {
-        /* For now only create a simple impl of instances :
-                - same speed, rot,..
-                - spaced out along x axis
-         */
-        use cgmath::{Matrix4, Vector3, Deg};
-        use rand::Rng;
-        let mut rng = rand::rng();
-        let mut out = Vec::with_capacity(count as usize);
-
-        let actual_radius = RADIUS * PARTICLE_SCALE;
-        // let diameter = 2.0 * actual_radius;
-        // let gap = 0.5 * diameter;
-        // let spacing = diameter + gap;
-        // let start_x = -0.5 * (count as f32 - 1.0) * spacing;
-
-        for i in 0..count {
-            let x = 0.0;
-            let y = actual_radius;
-            let z = 0.0;
-
-            // Initial speed
-            let speed = INITIAL_SPEED;
-            let vx = rng.gen_range(-speed..speed);
-            let vy = rng.gen_range(-speed..speed);
-            let vz = rng.gen_range(-speed..speed);
-
-            let trans = Matrix4::from_translation(Vector3::new(x, y, z));
-            let scale = Matrix4::from_scale(PARTICLE_SCALE);
-            let model = trans * scale;
-
-            let c0 = model.x;
-            let c1 = model.y;
-            let c2 = model.z;
-            let c3 = model.w;
-
-            out.push(Particle {
-                model_matrix: [
-                    c0.x, c0.y, c0.z, c0.w,
-                    c1.x, c1.y, c1.z, c1.w,
-                    c2.x, c2.y, c2.z, c2.w,
-                    c3.x, c3.y, c3.z, c3.w,
-                ],
-                velocity: [vx, vy, vz, 0.0],
-            });
-        }
-
-        out
-    }
-
-    fn create_instance_buffer(context: &Context, instances: &[Particle]) -> wgpu::Buffer {
+    fn create_storage_buffer(context: &Context, indices: &[u32]) -> wgpu::Buffer {
         context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Instance Buffer"),
-            contents: bytemuck::cast_slice(instances),
-            usage: wgpu::BufferUsages::VERTEX 
-            | wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_DST,
+            label: Some("Storage Buffer"),
+            contents: bytemuck::cast_slice(indices),
+            usage: wgpu::BufferUsages::STORAGE,
         })
     }
-
-    fn instance_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Particle>() as wgpu::BufferAddress, // 64
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &[
-                wgpu::VertexAttribute { offset: 0,  shader_location: 3, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 16, shader_location: 4, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 32, shader_location: 5, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 48, shader_location: 6, format: wgpu::VertexFormat::Float32x4 },
-            ],
-        }
-    }
-
 
 
     // 3. Bind Groups
@@ -568,9 +413,9 @@ impl ParticleSimApp {
         // Light init params
         let initial_light = LightUniform {
             light: LIGHT_POS,
-            ks_shininess: [KS, SHININESS],
+            ks: KS,
+            shininess: SHININESS,
             _pad: _PAD,
-            compute_specular: 0u32, // ? compute specular in shader ?
         };
 
         let light_buffer = context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -604,8 +449,6 @@ impl ParticleSimApp {
         layout: &wgpu::BindGroupLayout,
         texture_path: &str,
         ) -> wgpu::BindGroup {
-        
-        // Load image
         let img_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(texture_path);
         let img = image::open(&img_path)
             .expect("failed to load texture")
@@ -660,25 +503,32 @@ impl ParticleSimApp {
             label: Some("texture_bind_group"),
             layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&texture_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
             ],
         })
     }
 
     // 6. Render Pipeline
     fn create_render_pipeline(
+        // TRIANGLE LIST
         context: &Context,
         camera_layout: &wgpu::BindGroupLayout,
         texture_layout: &wgpu::BindGroupLayout,
         light_layout: &wgpu::BindGroupLayout,
         ) -> wgpu::RenderPipeline {
-        let shader_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SHADER_FILE);
+        let shader_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(GLOBE_SHADER_FILE);
         let shader_src = std::fs::read_to_string(&shader_path)
             .expect("failed to read shader file");
         
         let shader = context.device().create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("instances_shader"),
+            label: Some("globe_shader"),
             source: wgpu::ShaderSource::Wgsl(shader_src.into()),
         });
         
@@ -694,7 +544,7 @@ impl ParticleSimApp {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[Vertex::desc(), Self::instance_buffer_layout()],
+                buffers: &[Vertex::desc()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -733,6 +583,73 @@ impl ParticleSimApp {
         })
     }
     
+    // fn create_cloth_render_pipeline(
+    //     // TRIANGLE LIST
+    //     context: &Context,
+    //     camera_layout: &wgpu::BindGroupLayout,
+    //     texture_layout: &wgpu::BindGroupLayout,
+    //     ) -> wgpu::RenderPipeline {
+    //     let shader_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(CLOTH_SHADER_FILE);
+    //     let shader_src = std::fs::read_to_string(&shader_path)
+    //         .expect("failed to read shader file");
+        
+    //     let shader = context.device().create_shader_module(wgpu::ShaderModuleDescriptor {
+    //         label: Some("cloth_shader"),
+    //         source: wgpu::ShaderSource::Wgsl(shader_src.into()),
+    //     });
+        
+    //     let pipeline_layout = context.device().create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    //         label: Some("pipeline_layout"),
+    //         bind_group_layouts: &[camera_layout, texture_layout, light_layout],
+    //         push_constant_ranges: &[],
+    //     });
+        
+    //     context.device().create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    //         label: Some("render_pipeline"),
+    //         layout: Some(&pipeline_layout),
+    //         vertex: wgpu::VertexState {
+    //             module: &shader,
+    //             entry_point: "vs_main",
+    //             buffers: &[Vertex::desc()],
+    //             compilation_options: wgpu::PipelineCompilationOptions::default(),
+    //         },
+    //         fragment: Some(wgpu::FragmentState {
+    //             module: &shader,
+    //             entry_point: "fs_main",
+    //             targets: &[Some(wgpu::ColorTargetState {
+    //                 format: context.format(),
+    //                 blend: Some(wgpu::BlendState::REPLACE),
+    //                 write_mask: wgpu::ColorWrites::ALL,
+    //             })],
+    //             compilation_options: wgpu::PipelineCompilationOptions::default(),
+    //         }),
+    //         primitive: wgpu::PrimitiveState {
+    //             topology: wgpu::PrimitiveTopology::TriangleList,
+    //             strip_index_format: None,
+    //             front_face: wgpu::FrontFace::Ccw,
+    //             cull_mode: Some(wgpu::Face::Back),
+    //             polygon_mode: wgpu::PolygonMode::Fill,
+    //             unclipped_depth: false,
+    //             conservative: false,
+    //         },
+    //         depth_stencil: Some(wgpu::DepthStencilState {
+    //             format: context.depth_stencil_format(),
+    //             depth_write_enabled: true,
+    //             depth_compare: wgpu::CompareFunction::Less,
+    //             stencil: wgpu::StencilState::default(),
+    //             bias: wgpu::DepthBiasState::default(),
+    //         }),
+    //         multisample: wgpu::MultisampleState {
+    //             count: 1,
+    //             mask: !0,
+    //             alpha_to_coverage_enabled: false,
+    //         },
+    //         multiview: None,
+    //         cache: None,
+    //     })
+    // }
+
+
     // 7. Camera
     fn setup_camera(context: &Context) -> OrbitCamera {
         let mut camera = OrbitCamera::new(
@@ -744,14 +661,12 @@ impl ParticleSimApp {
         );
         camera
             .set_target(cgmath::point3(0.0, 0.0, 0.0))
-            .set_polar(cgmath::point3(DEFAULT_ZOOM, 0.0, 0.0))
+            .set_polar(cgmath::point3(2.0, 0.0, 0.0))
             .update(context);
         camera
     }
 
-
-
-    // 8. Compute pipeline
+    // 8.
     fn create_compute_bind_group_layout(context: &Context) -> wgpu::BindGroupLayout {
         context.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("compute_bind_group_layout"),
@@ -789,8 +704,8 @@ impl ParticleSimApp {
         ) -> (wgpu::Buffer, wgpu::BindGroup) {
         let sim_uniform = SimulationUniform {
             dt: TIME_SCALE,
-            bounds: BOUNDS,
-            damping: DAMPING,
+            // bounds: BOUNDS,
+            // damping: DAMPING,
             radius: RADIUS * PARTICLE_SCALE,
             // _pad0: 0.0,
             gravity: GRAVITY,
@@ -852,37 +767,37 @@ impl ParticleSimApp {
         })
     }
 
-    fn dispatch_compute(&self, context: &Context) {
-        let mut encoder = context.device().create_command_encoder(
-            &wgpu::CommandEncoderDescriptor {
-                label: Some("Compute Encoder"),
-            }
-        );
+    // fn dispatch_compute(&self, context: &Context) {
+    //     let mut encoder = context.device().create_command_encoder(
+    //         &wgpu::CommandEncoderDescriptor {
+    //             label: Some("Compute Encoder"),
+    //         }
+    //     );
         
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Compute Pass"),
-                timestamp_writes: None,
-            });
-            compute_pass.set_pipeline(&self.compute_pipeline);
-            compute_pass.set_bind_group(0, &self.compute_bind_group, &[]);
+    //     {
+    //         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+    //             label: Some("Compute Pass"),
+    //             timestamp_writes: None,
+    //         });
+    //         compute_pass.set_pipeline(&self.compute_pipeline);
+    //         compute_pass.set_bind_group(0, &self.compute_bind_group, &[]);
             
-            let workgroup_count = (self.instance_count + 63) / 64;
-            compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
-        }
+    //         let workgroup_count = (self.instance_count + 63) / 64;
+    //         compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+    //     }
         
-        context.queue().submit(Some(encoder.finish()));
-    }
+    //     context.queue().submit(Some(encoder.finish()));
+    // }
+
+
 
     // ============== Update =====================
     fn update_light_uniform(&self, context: &Context) {
-        // check if need to update light uniform
-        let compute_specular = if self.checkbox_specular { 1u32 } else { 0u32 };
         let updated_light = LightUniform {
             light: [self.light_pos[0], self.light_pos[1], self.light_pos[2], 0.0],
-            ks_shininess: [self.ks, self.shininess],
+            ks: self.ks,
+            shininess: self.shininess,
             _pad: _PAD,
-            compute_specular,
         };
         context.queue().write_buffer(
             &self.light_buffer,
@@ -891,34 +806,25 @@ impl ParticleSimApp {
         );
     }
 
+
+
 }
 
 
 
-impl App for ParticleSimApp {
+impl App for ClothSimApp {
     fn render(&self, render_pass: &mut wgpu::RenderPass<'_>) {
-
-        // ===== Render Speres =====
-        // Set pipeline
+        // Set pipeline, buffers
         render_pass.set_pipeline(&self.render_pipeline);
-        // Set buffers
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         //Bind Groups
         render_pass.set_bind_group(0, self.camera.bind_group(), &[]);
         render_pass.set_bind_group(1, &self.texture_bind_group, &[]);
         render_pass.set_bind_group(2, &self.light_bind_group, &[]);
+
         // Draw
-        render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instance_count);
-
-        // ===== Render Cube Wireframe =====
-        render_pass.set_pipeline(&self.wireframe_pipeline);
-        render_pass.set_vertex_buffer(0, self.cube_vertex_buffer.slice(..));
-        render_pass.set_index_buffer(self.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        render_pass.set_bind_group(0, self.camera.bind_group(), &[]);
-        render_pass.draw_indexed(0..self.cube_index_count, 0, 0..1);
-
+        render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
     }
 
     fn render_gui(&mut self, egui_ctx: &egui::Context, context: &Context) {
@@ -926,56 +832,53 @@ impl App for ParticleSimApp {
 
             // Radius slider
             ui.heading("Camera");
-            let mut zoom = self.camera.radius();
-            if ui.add(egui::Slider::new(&mut zoom, 15.0..=100.0).text("Zoom")).changed() {
-                self.camera.set_radius(zoom).update(context);
+            let mut radius = self.camera.radius();
+            if ui.add(egui::Slider::new(&mut radius, 2.0..=10.0).text("radius")).changed() {
+                self.camera.set_radius(radius).update(context);
             }
 
-            // -------- Light controls + SPECULAR ---------------
-            // ui.heading("Light");
-            // let mut light_changed = false;
-
-            // light_changed |= ui.checkbox(&mut self.checkbox_specular, "Specular").changed();
+            // Light controls
+            ui.heading("Light");
+            let mut light_changed = false;
             
-            // // Light position + shininness
-            // light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[0], -5.0..=5.0).text("Light X")).changed();
-            // light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[1], -5.0..=5.0).text("Light Y")).changed();
-            // light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[2], -5.0..=5.0).text("Light Z")).changed();
-            // light_changed |= ui.add(egui::Slider::new(&mut self.ks, 0.0..=2.0).text("Specular (ks)")).changed();
-            // light_changed |= ui.add(egui::Slider::new(&mut self.shininess, 1.0..=512.0).text("Shininess")).changed();
-
-            // if light_changed {
-            //     self.update_light_uniform(context);
-            // }
-
-            // ui.add_space(5.0);
+            light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[0], -5.0..=5.0).text("Light X")).changed();
+            light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[1], -5.0..=5.0).text("Light Y")).changed();
+            light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[2], -5.0..=5.0).text("Light Z")).changed();
             
+            ui.add_space(5.0);
+            light_changed |= ui.add(egui::Slider::new(&mut self.ks, 0.0..=2.0).text("Specular (ks)")).changed();
+            light_changed |= ui.add(egui::Slider::new(&mut self.shininess, 1.0..=512.0).text("Shininess")).changed();
+            // Update GPU buffer if any light param changed
+            if light_changed {
+                let updated_light = LightUniform {
+                    light: [self.light_pos[0], self.light_pos[1], self.light_pos[2], 0.0],
+                    ks: self.ks,
+                    shininess: self.shininess,
+                    _pad: _PAD,
+                };
+                context.queue().write_buffer(
+                    &self.light_buffer,
+                    0,
+                    bytemuck::bytes_of(&updated_light)
+                );
+            }
             
             ui.separator();
-
-            // Physics
-            ui.heading("Physics");
-            ui.add(egui::Slider::new(&mut self.gravity[1], -20.0..=1.0).text("Gravity Y"));
-            ui.add(egui::Slider::new(&mut self.time_scale, 0.0..=2.0).text("Time Scale"));
-            ui.add(egui::Slider::new(&mut self.bounds, 1.0..=20.0).text("Bounds"));
-            ui.add(egui::Slider::new(&mut self.damping, 0.5..=1.0).text("Damping"));
-        
 
 
             // Geometry info (read-only for now)
-            // ui.heading("Geometry");
-            // ui.label(format!("Stacks: {}", self.stack_count));
-            // ui.label(format!("Sectors: {}", self.sector_count));
-            // ui.label(format!("Vertices: {}", (self.stack_count + 1) * (self.sector_count + 1)));
-            
-            // ui.separator();
+            ui.heading("Geometry");
+            ui.label(format!("Stacks: {}", self.stack_count));
+            ui.label(format!("Sectors: {}", self.sector_count));
+            ui.label(format!("Vertices: {}", (self.stack_count + 1) * (self.sector_count + 1)));
             
             ui.separator();
+            
+
 
             // FPS
             ui.label(format!("FPS: {}", self.fps.round()));
             // Other
-            ui.label(format!("Instance count: {}", self.instance_count));
 
         });
     }
@@ -985,27 +888,11 @@ impl App for ParticleSimApp {
         self.camera.input(input, context);
     }
 
-    fn update(&mut self, delta_time: f32, context: &Context) {
+    fn update(&mut self, delta_time: f32, _context: &Context) {
         self.fps = 1.0 / delta_time;
 
+        // TODO add simul and substep which is number of simul per delta time
 
-        let sim_uniform = SimulationUniform {
-            dt: self.time_scale * delta_time,
-            bounds: self.bounds,
-            damping: self.damping,
-            radius: RADIUS * PARTICLE_SCALE,
-            // _pad0: 0.0,
-            gravity: self.gravity,
-            _pad1: 0.0,
-        };
-
-        context.queue().write_buffer(
-            &self.sim_uniform_buffer,
-            0,
-            bytemuck::bytes_of(&sim_uniform),
-        );
-
-        self.dispatch_compute(context);
 
     }
 
@@ -1016,3 +903,30 @@ impl App for ParticleSimApp {
     }
 
 }
+
+
+// spring :
+    // stiffness K list for diff springs [K_structural, K_shear, K_bend], same for Lrest, just use a reference to this list
+    // buffer : [particle0, p1, K0, L_rest, Fhook] + damping we just need [Lprev] and copute Fdamp (delta L / delta T) and add to Fhook
+    
+// compute.wgsl :
+    // buffer : pos, vel
+    // compute : for ech particle, read connected spring F force, add F_collision, add gravity, update vel and pos based on them
+
+
+// Globe easier than cube (collision = dist(particle, globe center) - radius ?>? positive or negative ? if negative, then collision)
+// cube needs quadrants for each of 6 faces
+
+
+
+// Pipelines : 
+
+    // for now cloth = multiple instances of cubes/globes with forces between them
+    // later : single cloth mesh (no particles just positions) with same forces
+
+    // 2 Render pipeline  for globe_cloth and big globe
+    // later 1 render for cloth and globe
+
+    // compute pipeline; see up, better one for springs and one for position compute
+
+

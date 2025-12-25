@@ -30,4 +30,11 @@ from : https://songho.ca/opengl/gl_sphere.html
 
 
 
+## Links & Ressources
 
+- Wgpu starting guide : [Zdgeier](https://zdgeier.com/wgpuintro.html)
+- Jack1232's Tutorial & Videos : [wgpu-step-by-step](https://github.com/jack1232/WebGPU-Step-By-Step)
+- Rust-based Game Engine : [Bevy](https://github.com/bevyengine/bevy)
+
+
+- Shader Offset computer : [wgsl](https://webgpufundamentals.org/webgpu/lessons/resources/wgsl-offset-computer.html#)

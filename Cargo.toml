@@ -5,8 +5,7 @@ members = [
     "simulations/2_TexturedCube",
     "simulations/3_Globe",
     "simulations/4_instances_imgui",
-    # "simulations/5_cloth_simulation",
-    # "simulations/test_old",
+    "simulations/5_cloth_simulation",
 ]
 
 
