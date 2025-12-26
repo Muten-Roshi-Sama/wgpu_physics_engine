@@ -57,34 +57,32 @@ const COMPUTE_SHADER_FILE: &str = "compute_movement.wgsl";
 // const TEXTURE_FILE: &str = "../../textures/earth2048.bmp";
 // const TEXTURE_FILE: &str = "../../textures/moon1024.bmp";
 const TEXTURE_FILE: &str = "../../textures/grey.png";
-
+const CLOTH_PARTICLES_TEXTURE_FILE: &str = "../../textures/red.png";
 
 // ============= PARAMS =====================
 
 // Camera
 const DEFAULT_ZOOM: f32 = 40.0;
 
+// Globe geometry
+const RADIUS: f32 = 10.0;
+const STACK_COUNT: usize = 64;
+const SECTOR_COUNT: usize = 128;
 // Specular light parameters
-const LIGHT_POS: [f32; 4] = [2.0, 2.0, 2.0, 0.0];
+const LIGHT_POS: [f32; 4] = [2.0*RADIUS, 2.0*RADIUS, 2.0*RADIUS, 0.0];
 const KS: f32 = 0.15;
 const SHININESS: f32 = 128.0;
 const _PAD: u32 = 0u32;
 
-// Globe geometry
-const RADIUS: f32 = 1.0;
-const STACK_COUNT: usize = 64;
-const SECTOR_COUNT: usize = 128;
-
 // Physics
 const TIME_SCALE: f32 = 1.0;
 const GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
-// const DAMPING: f32 = 0.95;
 
 // Cloth 
 const CLOTH_PARTICLES_PER_SIDE: u32 = 20;
-const PARTICLE_SCALE : f32 = 1.0;
-// const CLOTH_SIZE: f32 = 5.0;
-// const CLOTH_POS: [f32;3] = [0.0, 2.0, 0.0];
+const CLOTH_PARTICLES_RADIUS: f32 = 0.5;
+const CLOTH_SIZE: f32 = 30.0;
+const CLOTH_CENTRAL_POS: [f32;3] = [0.0, 4.0 * RADIUS, 0.0];
 const MASS: f32 = 10.0;
 
 // Springs
@@ -111,9 +109,10 @@ struct Vertex {
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct LightUniform {
     light: [f32; 4],          // maps to vec4<f32> in WGSL
-    ks_shininess: [f32; 2],  // specular strength & shininess exponent
-    _pad: u32,              // padding to 16-byte alignment
-    compute_specular: u32, // whether to use specular component
+    ks: f32,                  // specular strength & shininess exponent
+    shininess: f32,           // α-shininess exponent
+    compute_specular: u32,    // whether to use specular component
+    _pad: u32,                // padding to 16-byte alignment
 }
 
 #[repr(C)]
@@ -129,7 +128,8 @@ struct Particle {
 struct SimulationUniform {
     dt: f32,
     radius: f32,
-    _pad1: [f32; 2],
+    globe_radius: f32,
+    _pad1: f32,
     gravity: [f32; 3],
     _gravity_pad: f32,
 }
@@ -187,8 +187,12 @@ pub struct ClothSimApp {
     light_buffer: wgpu::Buffer,
     fps: f32,
 
+    // main globe
+    globe_radius: f32,
 
     // Cloth
+    cloth_texture_bind_group: wgpu::BindGroup, //particules inst = red
+    cloth_particle_radius: f32,
     instance_buffer: wgpu::Buffer,
     instance_count: u32,
     cloth_pipeline: wgpu::RenderPipeline,
@@ -285,10 +289,18 @@ impl ClothSimApp {
         // let cloth_velocities_buffer = Self::create_storage_buffer(context, &[]); // TODO: fill with velocities
 
         // 2.x Instance buffer
-        let instance_count: u32 = CLOTH_PARTICLES_PER_SIDE;
-        let instances = Self::generate_instances(instance_count);
+        let instances = Self::generate_instances(CLOTH_PARTICLES_PER_SIDE, CLOTH_PARTICLES_RADIUS);
+        let instance_count: u32 = CLOTH_PARTICLES_PER_SIDE * CLOTH_PARTICLES_PER_SIDE; // 10x10 grid
         let instance_buffer = Self::create_instance_buffer(context, &instances);  // then called in render pipeline !
 
+        // 3. Textures for red cloth particles
+        let cloth_texture_bind_group = Self::load_texture_and_create_bind_group(
+            context,
+            &texture_bind_group_layout,
+            CLOTH_PARTICLES_TEXTURE_FILE,
+        );
+
+        // 
         let cloth_pipeline = Self::create_cloth_render_pipeline(
             context,
             &camera_bind_group_layout,
@@ -307,7 +319,7 @@ impl ClothSimApp {
 
 
         Self {
-            // Rendering
+            // Globe
             vertex_buffer,
             index_buffer,
             render_pipeline,
@@ -320,7 +332,12 @@ impl ClothSimApp {
             light_buffer,
             fps: 0.0,
 
+            // main globe
+            globe_radius: RADIUS,
+
             // CLOTH
+            cloth_texture_bind_group,
+            cloth_particle_radius: CLOTH_PARTICLES_RADIUS,
             instance_buffer,
             instance_count,
             cloth_pipeline,
@@ -336,7 +353,7 @@ impl ClothSimApp {
 
             // Eframe
             light_pos: [LIGHT_POS[0], LIGHT_POS[1], LIGHT_POS[2]],
-            checkbox_specular: false,
+            checkbox_specular: true,
             ks: KS,
             shininess: SHININESS,
 
@@ -586,9 +603,11 @@ impl ClothSimApp {
         // Light init params
         let initial_light = LightUniform {
             light: LIGHT_POS,
-            ks_shininess: [KS, SHININESS],
-            _pad: _PAD,
+            ks: KS,
+            shininess: SHININESS,
             compute_specular: 0u32, // ? compute specular in shader ?
+            _pad: _PAD,
+            
         };
 
         let light_buffer = context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -616,12 +635,14 @@ impl ClothSimApp {
     }
     fn update_light_uniform(&self, context: &Context) {
         // check if need to update light uniform
-        let compute_specular = if self.checkbox_specular { 1u32 } else { 0u32 };
+        let compute_specular = if self.checkbox_specular { 0u32 } else { 1u32 };
         let updated_light = LightUniform {
             light: [self.light_pos[0], self.light_pos[1], self.light_pos[2], 0.0],
-            ks_shininess: [self.ks, self.shininess],
-            _pad: _PAD,
+            ks: self.ks,
+            shininess: self.shininess,
             compute_specular,
+            _pad: _PAD,
+            
         };
         context.queue().write_buffer(
             &self.light_buffer,
@@ -634,7 +655,7 @@ impl ClothSimApp {
 
 
 
-    // Cloth
+    // ====== Cloth ===========
     // fn create_cloth_geometry() -> (Vec<Vertex>, Vec<u32>, u32) {
 
     //     let mut cloth_vertices = Vec::new();
@@ -694,12 +715,14 @@ impl ClothSimApp {
     // }
 
     // 2.x Instance buffer
-    fn generate_instances(count: u32) -> Vec<Particle> {
+    fn generate_instances(count: u32, radius: f32) -> Vec<Particle> {
         use cgmath::{Matrix4, Vector3};
-        // let n = CLOTH_PARTICLES_PER_SIDE;
-        let spacing = 2.2 * RADIUS;
-        let spawn_height = 20.0;
-        let actual_radius = RADIUS * PARTICLE_SCALE;
+
+        let spacing = CLOTH_SIZE / (count as f32 - 1.0);
+        let central_pos = CLOTH_CENTRAL_POS;
+        let spawn_height = central_pos[1];
+
+        let scale_factor = radius/RADIUS;
         
         let mut out = Vec::new();
 
@@ -709,7 +732,7 @@ impl ClothSimApp {
                 let y = spawn_height;
                 let z = (j as f32 - count as f32 / 2.0) * spacing;
                 let trans = Matrix4::from_translation(Vector3::new(x, y, z));
-                let scale = Matrix4::from_scale(PARTICLE_SCALE);
+                let scale = Matrix4::from_scale(scale_factor);
                 let model = trans * scale;
                 let c0 = model.x;
                 let c1 = model.y;
@@ -832,6 +855,7 @@ impl ClothSimApp {
 
 
 
+
     // =========== COMPUTE =================
     fn create_compute_bind_group_layout(context: &Context) -> wgpu::BindGroupLayout {
         context.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -870,8 +894,9 @@ impl ClothSimApp {
         ) -> (wgpu::Buffer, wgpu::BindGroup) {
         let sim_uniform = SimulationUniform {
             dt: TIME_SCALE,
-            radius: RADIUS * PARTICLE_SCALE,
-            _pad1: [0.0, 0.0],
+            radius: CLOTH_PARTICLES_RADIUS,
+            globe_radius: RADIUS,
+            _pad1: 0.0,
             gravity: GRAVITY,
             _gravity_pad: 0.0,
         };
@@ -998,6 +1023,9 @@ impl App for ClothSimApp {
         // INSTANCE buffer
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
 
+        //Bind grps
+        render_pass.set_bind_group(0, self.camera.bind_group(), &[]);
+        render_pass.set_bind_group(1, &self.cloth_texture_bind_group, &[]);
 
         // Draw
         render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instance_count);
@@ -1007,18 +1035,19 @@ impl App for ClothSimApp {
     fn render_gui(&mut self, egui_ctx: &egui::Context, context: &Context) {
         egui::Window::new("Params").show(egui_ctx, |ui| {
 
-            // RCAMERA
+            // ====== CAMERA ======
             ui.heading("Camera");
             let mut zoom = self.camera.radius();
             if ui.add(egui::Slider::new(&mut zoom, 15.0..=100.0).text("Zoom")).changed() {
                 self.camera.set_radius(zoom).update(context);
             }
 
-            // Light controls
+            // ====== LIGHT =======
             ui.heading("Light");
             let mut light_changed = false;
-        
-            light_changed |= ui.checkbox(&mut self.checkbox_specular, "Specular").changed();
+            
+            // to do : hitting checkbox completely deactivates specular (cannot reactivate)
+            // light_changed |= ui.checkbox(&mut self.checkbox_specular, "Specular").changed();
 
             light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[0], -5.0..=5.0).text("Light X")).changed();
             light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[1], -5.0..=5.0).text("Light Y")).changed();
@@ -1032,25 +1061,34 @@ impl App for ClothSimApp {
             if light_changed {
                 self.update_light_uniform(context);
             }
-            
             ui.separator();
 
-            // Physics
+
+
+            // ====== Physics ======
             ui.heading("Physics");
-            ui.add(egui::Slider::new(&mut self.gravity[1], -20.0..=1.0).text("Gravity Y"));
+            ui.add(egui::Slider::new(&mut self.gravity[1], -20.0..=10.0).text("Gravity Y"));
             ui.add(egui::Slider::new(&mut self.time_scale, 0.0..=2.0).text("Time Scale"));
-            // ui.add(egui::Slider::new(&mut self.bounds, 1.0..=20.0).text("Bounds"));
-            // ui.add(egui::Slider::new(&mut self.damping, 0.5..=1.0).text("Damping"));
-        
-
             ui.separator();
 
-            // Geometry info (read-only for now)
+
+
+            // ====== Geometry ======
             ui.heading("Geometry");
+            if ui.add(egui::Slider::new(&mut self.cloth_particle_radius, 0.1..=4.0).text("Cloth Particle Radius")).changed() {
+                let new_instances = Self::generate_instances(CLOTH_PARTICLES_PER_SIDE, self.cloth_particle_radius);
+                // Update the instance buffer
+                context.queue().write_buffer(
+                    &self.instance_buffer,
+                    0,
+                    bytemuck::cast_slice(&new_instances),
+                );
+            }
+
+
             ui.label(format!("Stacks: {}", self.stack_count));
             ui.label(format!("Sectors: {}", self.sector_count));
             ui.label(format!("Vertices: {}", (self.stack_count + 1) * (self.sector_count + 1)));
-            
             ui.separator();
             
 
@@ -1074,8 +1112,9 @@ impl App for ClothSimApp {
         // TODO add simul and substep which is number of simul per delta time
         let sim_uniform = SimulationUniform {
             dt: self.time_scale * delta_time,
-            radius: RADIUS * PARTICLE_SCALE,
-            _pad1: [0.0, 0.0],
+            radius: self.cloth_particle_radius,
+            globe_radius: self.globe_radius,
+            _pad1: 0.0,
             gravity: self.gravity,
             _gravity_pad: 0.0,
         };

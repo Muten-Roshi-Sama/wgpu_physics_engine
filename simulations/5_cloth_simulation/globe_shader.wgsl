@@ -9,11 +9,12 @@ struct RenderParams {
 };
 
 struct LightStruct {
-    light: vec4<f32>,       // light pos.xyz, pad
-    ks: f32,               // scalar specular strength
-    shininess: f32,        // α-shininess exponent
-    _pad: vec2<f32>,        // padding to 16-byte alignment
-}
+    light: vec4<f32>,          // light pos.xyz, pad
+    ks: f32,                  // scalar specular strength
+    shininess: f32,          // α-shininess exponent
+    compute_specular: u32,  // whether to use specular component
+    _pad: u32,             // padding to 16-byte alignment
+} // 16 + 4 + 4 +4 + 4 = 32 bytes
 
 // GROUP(0) : utils/OrbitCamera logic, reserve group(0)  
 @group(0) @binding(0) var<uniform> params: RenderParams;
@@ -95,19 +96,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let r: vec3<f32> = normalize(reflect(-l, n)); // or 2.0 * dot(n, l) * n - l);   // -L is the incident vector !
 
 
-    // --- Specular Light
-    let alpha: f32 = light_uni.shininess;             // shininess exponent
-    let ks: f32 = light_uni.ks;                      // spec strength
-    let r_dot_v: f32 = max(dot(r, v), 0.0);         // spec angle (see graph)
-    let light_color =  vec3<f32>(1.0, 1.0, 1.0);   // Reflected light color
-    let spec: vec3<f32> = ks * pow(r_dot_v, alpha) * light_color;    // I_s = ks * (R·V)^α * C_L
-
     // --- Diffuse light model
     let ambient : f32 = 0.1;
     let luminosity: f32 = 2.4;
     let shading: f32 = clamp(dot(n, l), ambient, 1.0);
     let color =  textureSample(diffuse_tex, diffuse_samp, in.uv);
     let diffuse = color.xyz * shading * luminosity;
+
+    // Return early if no specular computation
+    if(light_uni.compute_specular != 0u) {
+        return vec4<f32>(diffuse, 1.0);
+    }
+
+    // --- Specular Light
+    let alpha: f32 = light_uni.shininess;             // shininess exponent
+    let ks: f32 = light_uni.ks;                      // spec strength
+    let r_dot_v: f32 = max(dot(r, v), 0.0);         // spec angle (see graph)
+    let light_color =  vec3<f32>(1.0, 1.0, 1.0);   // Reflected light color
+    let spec: vec3<f32> = ks * pow(r_dot_v, alpha) * light_color;    // I_s = ks * (R·V)^α * C_L
 
     // 3. Combine Specular + diffuse
     let result: vec3<f32> = spec + diffuse;
