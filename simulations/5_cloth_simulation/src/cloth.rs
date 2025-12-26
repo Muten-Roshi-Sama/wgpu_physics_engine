@@ -363,7 +363,7 @@ impl ClothSimApp {
         );
         camera
             .set_target(cgmath::point3(0.0, 0.0, 0.0))
-            .set_polar(cgmath::point3(2.0, 0.0, 0.0))
+            .set_polar(cgmath::point3(DEFAULT_ZOOM, 0.0, 0.0))
             .update(context);
         camera
     }
@@ -981,17 +981,19 @@ impl App for ClothSimApp {
     fn render_gui(&mut self, egui_ctx: &egui::Context, context: &Context) {
         egui::Window::new("Params").show(egui_ctx, |ui| {
 
-            // Radius slider
+            // RCAMERA
             ui.heading("Camera");
-            let mut radius = self.camera.radius();
-            if ui.add(egui::Slider::new(&mut radius, 2.0..=10.0).text("radius")).changed() {
-                self.camera.set_radius(radius).update(context);
+            let mut zoom = self.camera.radius();
+            if ui.add(egui::Slider::new(&mut zoom, 15.0..=100.0).text("Zoom")).changed() {
+                self.camera.set_radius(zoom).update(context);
             }
 
             // Light controls
             ui.heading("Light");
             let mut light_changed = false;
-            
+        
+            light_changed |= ui.checkbox(&mut self.checkbox_specular, "Specular").changed();
+
             light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[0], -5.0..=5.0).text("Light X")).changed();
             light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[1], -5.0..=5.0).text("Light Y")).changed();
             light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[2], -5.0..=5.0).text("Light Z")).changed();
@@ -1007,6 +1009,15 @@ impl App for ClothSimApp {
             
             ui.separator();
 
+            // Physics
+            ui.heading("Physics");
+            ui.add(egui::Slider::new(&mut self.gravity[1], -20.0..=1.0).text("Gravity Y"));
+            ui.add(egui::Slider::new(&mut self.time_scale, 0.0..=2.0).text("Time Scale"));
+            // ui.add(egui::Slider::new(&mut self.bounds, 1.0..=20.0).text("Bounds"));
+            // ui.add(egui::Slider::new(&mut self.damping, 0.5..=1.0).text("Damping"));
+        
+
+            ui.separator();
 
             // Geometry info (read-only for now)
             ui.heading("Geometry");
@@ -1021,6 +1032,7 @@ impl App for ClothSimApp {
             // FPS
             ui.label(format!("FPS: {}", self.fps.round()));
             // Other
+            ui.label(format!("Instance count: {}", self.instance_count));
 
         });
     }
