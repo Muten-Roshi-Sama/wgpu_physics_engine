@@ -38,3 +38,73 @@ from : https://songho.ca/opengl/gl_sphere.html
 
 
 - Shader Offset computer : [wgsl](https://webgpufundamentals.org/webgpu/lessons/resources/wgsl-offset-computer.html#)
+
+
+
+
+## Technical Overview :
+
+
+### Shader file : 
+- file containing GPU programs.
+- Vertex Shader: Runs once per vertex. Transforms positions, passes data to the next stage.
+- Fragment Shader: Runs once per pixel. Computes the final color for each pixel.
+- Compute Shader : general computations (e.g. R/W in buffers).
+
+### Pipeline
+
+- A configuration object that tells the GPU how to use shaders, buffers, and other state.
+- Render Pipeline: Used for drawing (vertex + fragment shaders).
+- Compute Pipeline: Used for general-purpose computation (compute shaders).
+
+### Buffers
+- Vertex Buffer: Stores per-vertex data (positions, normals, uvs).
+- Index Buffer: Stores indices for indexed drawing (which vertices make up each triangle).
+- Uniform Buffer: Stores small, frequently-read data (camera matrices, lighting).
+- Storage Buffer: Stores large, read/write data (particle positions, velocities).
+
+### Bind Group
+- A collection of resources (buffers, textures, samplers) bound together for use in shaders.
+
+
+
+
+
+
+
+
+## Cloth simulation :
+
+Display :
+- One main textured globe
+- A grid of globes acting as the nodes/particles of the cloth.
+
+
+
+### 1. Compute objects geometry
+
+- Vertex buffer: Contains the geometry for a single sphere (positions, normals, uvs for one sphere).
+- Index buffer: Tells the GPU how to connect those vertices into triangles for that sphere.
+
+
+Main idea : 
+
+Compute sphere geometry once, using those buffers, then draw this same mesh how many times we need !
+
+
+### 2. globe_shader.wgsl
+- Renders the main globe.
+- transform world space to clip space
+- Applies lighting and texturing.
+- Draws the sphere mesh once (no instancing).
+
+
+### 3. cloth_instances.wgsl
+- Renders the cloth as many spheres (particles).
+- transform world space to clip space
+- Uses Particles struct for per-instance transforms (model matrix for each sphere).
+- Draws the sphere mesh many times (instancing), each at a different position.
+
+
+
+

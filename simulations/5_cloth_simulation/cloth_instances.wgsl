@@ -1,16 +1,19 @@
 // instances_shader.wgsl
 
 struct RenderParams {
+    // Buffer for Camera matrices 
+    // group(0) binding(0)
+    // ...
     view: mat4x4<f32>,    // View (Model pace -> View/Camera space)
     proj: mat4x4<f32>,   // Projection matrix (view-space -> clip-space)
 };
 
-struct LightStruct {
-    light: vec4<f32>,          // light pos.xyz, pad
-    ks_shininess: vec2<f32>,  // [scalar specular strength, α-shininess exponent]
-    _pad: u32,               // padding to 16-byte alignment
-    compute_specular: u32,  // whether to use specular component
-}
+// struct LightStruct {
+//     light: vec4<f32>,          // light pos.xyz, pad
+//     ks_shininess: vec2<f32>,  // [scalar specular strength, α-shininess exponent]
+//     _pad: u32,               // padding to 16-byte alignment
+//     compute_specular: u32,  // whether to use specular component
+// }
 
 // GROUP(0) : utils/OrbitCamera logic, reserve group(0)  
 @group(0) @binding(0) var<uniform> params: RenderParams;
@@ -18,17 +21,19 @@ struct LightStruct {
 @group(1) @binding(0) var diffuse_tex: texture_2d<f32>;
 @group(1) @binding(1) var diffuse_samp: sampler;
 // GROUP(2) : light 
-@group(2) @binding(0) var<uniform> light_uni : LightStruct;
+// @group(2) @binding(0) var<uniform> light_uni : LightStruct;
 
 
 
 struct VertexInput {
+    // attributes of each globe-instance (main globe and cloth particles)
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
 };
 
 struct Particles {
+    // attributes of each moving-instance (modelMatrix, speed,...)
     @location(3) c0: vec4<f32>,
     @location(4) c1: vec4<f32>,
     @location(5) c2: vec4<f32>,

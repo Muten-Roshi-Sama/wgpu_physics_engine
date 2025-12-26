@@ -12,9 +12,9 @@ struct SimulationData {
     bounds: f32,
     damping: f32,
     radius: f32,
-    gravity: vec3<f32>,
+    gravity: vec3<f32>,  // vec3 treated as vec4 (16bytes) --> add 4bytes padding
     _pad1: f32,
-}
+} // 5 * f32 + vec3 + 4 = 32 bytes 
 
 struct Particle {
     /*

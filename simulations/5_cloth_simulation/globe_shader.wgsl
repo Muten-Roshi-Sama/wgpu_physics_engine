@@ -1,6 +1,9 @@
 // globe_shader.wgsl
 
 struct RenderParams {
+    // Buffer for Camera matrices 
+    // group(0) binding(0)
+    // ...
     view: mat4x4<f32>,    // View (Model pace -> View/Camera space)
     proj: mat4x4<f32>,   // Projection matrix (view-space -> clip-space)
 };
@@ -23,15 +26,18 @@ struct LightStruct {
 
 
 struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
+    // attribute of each instance (here only 1 main globe)
+    // each call to vs_main gets one of these
+    @location(0) position: vec3<f32>,   
+    @location(1) normal: vec3<f32>,     //
     @location(2) uv: vec2<f32>,
 };
 struct VertexOutput {
-    @builtin(position) clip: vec4<f32>,
-    @location(0) position_view: vec3<f32>,
-    @location(1) normal_view: vec3<f32>,  //TODO : make sure to normalize in FS into unit vector
-    @location(2) uv: vec2<f32>,
+    // output of vs_main, input of fs_main
+    @builtin(position) clip: vec4<f32>,      // final pos in clip space
+    @location(0) position_view: vec3<f32>,  // pos in view-space (for lighting)
+    @location(1) normal_view: vec3<f32>,   // normal in view-space (for lighting)
+    @location(2) uv: vec2<f32>,           // texture coords
 };
 
 @vertex

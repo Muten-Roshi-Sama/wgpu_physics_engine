@@ -50,7 +50,7 @@ use wgpu_bootstrap::{
 // =========== CONFIGURATIONS =============
 
 const GLOBE_SHADER_FILE: &str = "globe_shader.wgsl";
-const CLOTH_SHADER_FILE: &str = "cloth_shader.wgsl";
+const CLOTH_SHADER_FILE: &str = "cloth_instances.wgsl";
 const COMPUTE_SHADER_FILE: &str = "compute_movement.wgsl";
 
 // const TEXTURE_FILE: &str = "../../textures/texture.png";
@@ -76,15 +76,15 @@ const STACK_COUNT: usize = 64;
 const SECTOR_COUNT: usize = 128;
 
 // Physics
-const NUM_PARTICLES: u32 = 10;
-const PARTICLE_SCALE : f32 = 1.0;
 const TIME_SCALE: f32 = 1.0;
 const GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
 // const DAMPING: f32 = 0.95;
 
 // Cloth 
-const CLOTH_SIZE: f32 = 5.0;
-const CLOTH_POS: [f32;3] = [0.0, 2.0, 0.0];
+const CLOTH_PARTICLES_PER_SIDE: u32 = 20;
+const PARTICLE_SCALE : f32 = 1.0;
+// const CLOTH_SIZE: f32 = 5.0;
+// const CLOTH_POS: [f32;3] = [0.0, 2.0, 0.0];
 const MASS: f32 = 10.0;
 
 // Springs
@@ -128,11 +128,10 @@ struct Particle {
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct SimulationUniform {
     dt: f32,
-    // bounds: f32,
-    // damping: f32,
     radius: f32,
+    _pad1: [f32; 2],
     gravity: [f32; 3],
-    _pad1: f32,
+    _gravity_pad: f32,
 }
 
 
@@ -189,9 +188,10 @@ pub struct ClothSimApp {
     fps: f32,
 
 
-    // Instancing
+    // Cloth
     instance_buffer: wgpu::Buffer,
     instance_count: u32,
+    cloth_pipeline: wgpu::RenderPipeline,
 
     // Computing
     compute_pipeline: wgpu::ComputePipeline,
@@ -217,8 +217,6 @@ pub struct ClothSimApp {
 }
 
 impl ClothSimApp {
-
-
     // Bind Groups lyouts   
             /* 
             - GROUP(0) Camera
@@ -265,7 +263,7 @@ impl ClothSimApp {
 
 
         // 5. Render Pipeline
-        let render_pipeline = Self::create_render_pipeline(
+        let render_pipeline = Self::create_globe_render_pipeline(
             context,
             &camera_bind_group_layout,
             &texture_bind_group_layout,
@@ -287,15 +285,16 @@ impl ClothSimApp {
         // let cloth_velocities_buffer = Self::create_storage_buffer(context, &[]); // TODO: fill with velocities
 
         // 2.x Instance buffer
-        let instance_count: u32 = NUM_PARTICLES;
+        let instance_count: u32 = CLOTH_PARTICLES_PER_SIDE;
         let instances = Self::generate_instances(instance_count);
         let instance_buffer = Self::create_instance_buffer(context, &instances);  // then called in render pipeline !
 
-        // let cloth_pipeline = Self::create_cloth_render_pipeline(
-        //     context,
-        //     &camera_bind_group_layout,
-        //     &texture_bind_group_layout,
-        // );
+        let cloth_pipeline = Self::create_cloth_render_pipeline(
+            context,
+            &camera_bind_group_layout,
+            &texture_bind_group_layout,
+            // &light_bind_group_layout,
+        );
 
         
         // ===========================
@@ -321,10 +320,12 @@ impl ClothSimApp {
             light_buffer,
             fps: 0.0,
 
-            // Instancing
+            // CLOTH
             instance_buffer,
             instance_count,
-            // Compute movement for instances
+            cloth_pipeline,
+
+            // Coompute
             compute_pipeline,
             compute_bind_group,
             sim_uniform_buffer,
@@ -368,7 +369,6 @@ impl ClothSimApp {
         camera
     }
     
-
 
     // Globe
     fn create_sphere_geometry() -> (Vec<Vertex>, Vec<u32>, u32) {
@@ -492,7 +492,7 @@ impl ClothSimApp {
             ],
         })
     }
-    fn create_render_pipeline(
+    fn create_globe_render_pipeline(
         // TRIANGLE LIST
         context: &Context,
         camera_layout: &wgpu::BindGroupLayout,
@@ -520,7 +520,10 @@ impl ClothSimApp {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[Vertex::desc()],
+                buffers: &[
+                    Vertex::desc()//,
+                    // Self::instance_buffer_layout()
+                ],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -558,9 +561,6 @@ impl ClothSimApp {
             cache: None,
         })
     }
-
-
-
 
     // Light
     fn create_light_bind_group_layout(context: &Context) -> wgpu::BindGroupLayout {
@@ -695,50 +695,44 @@ impl ClothSimApp {
 
     // 2.x Instance buffer
     fn generate_instances(count: u32) -> Vec<Particle> {
-        /* For now only create a simple impl of instances :
-                - same speed, rot,..
-                - spaced out along x axis
-         */
-        use cgmath::{Matrix4, Vector3, Deg};
-        use rand::Rng;
-        let mut rng = rand::rng();
-        let mut out = Vec::with_capacity(count as usize);
-
+        use cgmath::{Matrix4, Vector3};
+        // let n = CLOTH_PARTICLES_PER_SIDE;
+        let spacing = 2.2 * RADIUS;
+        let spawn_height = 20.0;
         let actual_radius = RADIUS * PARTICLE_SCALE;
-        // let diameter = 2.0 * actual_radius;
-        // let gap = 0.5 * diameter;
-        // let spacing = diameter + gap;
-        // let start_x = -0.5 * (count as f32 - 1.0) * spacing;
+        
+        let mut out = Vec::new();
 
         for i in 0..count {
-            let x = 0.0;
-            let y = actual_radius;
-            let z = 0.0;
+            for j in 0..count {
+                let x = (i as f32 - count as f32 / 2.0) * spacing;
+                let y = spawn_height;
+                let z = (j as f32 - count as f32 / 2.0) * spacing;
+                let trans = Matrix4::from_translation(Vector3::new(x, y, z));
+                let scale = Matrix4::from_scale(PARTICLE_SCALE);
+                let model = trans * scale;
+                let c0 = model.x;
+                let c1 = model.y;
+                let c2 = model.z;
+                let c3 = model.w;
 
-            // Initial speed
-            let speed = 40;
-            let vx = rng.gen_range(-speed..speed);
-            let vy = rng.gen_range(-speed..speed);
-            let vz = rng.gen_range(-speed..speed);
+                // Initial speed
+                let speed = 0.0;
+                let vx = speed; //rng.gen_range(-speed..speed);
+                let vy = speed; //rng.gen_range(-speed..speed);
+                let vz = speed; //rng.gen_range(-speed..speed);
 
-            let trans = Matrix4::from_translation(Vector3::new(x, y, z));
-            let scale = Matrix4::from_scale(PARTICLE_SCALE);
-            let model = trans * scale;
 
-            let c0 = model.x;
-            let c1 = model.y;
-            let c2 = model.z;
-            let c3 = model.w;
-
-            out.push(Particle {
-                model_matrix: [
-                    c0.x, c0.y, c0.z, c0.w,
-                    c1.x, c1.y, c1.z, c1.w,
-                    c2.x, c2.y, c2.z, c2.w,
-                    c3.x, c3.y, c3.z, c3.w,
-                ],
-                velocity: [0.0, 0.0, 0.0, 0.0],
-            });
+                out.push(Particle {
+                    model_matrix: [
+                        c0.x, c0.y, c0.z, c0.w,
+                        c1.x, c1.y, c1.z, c1.w,
+                        c2.x, c2.y, c2.z, c2.w,
+                        c3.x, c3.y, c3.z, c3.w,
+                    ],
+                    velocity: [vx, vy, vz, 0.0],
+                });
+            }
         }
 
         out
@@ -767,75 +761,78 @@ impl ClothSimApp {
         }
     }
     
-    // fn create_cloth_render_pipeline(
-    //     // TRIANGLE LIST
-    //     context: &Context,
-    //     camera_layout: &wgpu::BindGroupLayout,
-    //     texture_layout: &wgpu::BindGroupLayout,
-    //     ) -> wgpu::RenderPipeline {
-    //     let shader_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(CLOTH_SHADER_FILE);
-    //     let shader_src = std::fs::read_to_string(&shader_path)
-    //         .expect("failed to read shader file");
+    fn create_cloth_render_pipeline(
+        // TRIANGLE LIST
+        // NO LIGHTING !!
+        context: &Context,
+        camera_layout: &wgpu::BindGroupLayout,
+        texture_layout: &wgpu::BindGroupLayout,
+        // light_layout: &wgpu::BindGroupLayout,
+        ) -> wgpu::RenderPipeline {
+        let shader_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(CLOTH_SHADER_FILE);
+        let shader_src = std::fs::read_to_string(&shader_path).expect("failed to read shader file");
         
-    //     let shader = context.device().create_shader_module(wgpu::ShaderModuleDescriptor {
-    //         label: Some("cloth_shader"),
-    //         source: wgpu::ShaderSource::Wgsl(shader_src.into()),
-    //     });
+        let shader = context.device().create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("cloth_shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_src.into()),
+        });
         
-    //     let pipeline_layout = context.device().create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-    //         label: Some("pipeline_layout"),
-    //         bind_group_layouts: &[camera_layout, texture_layout, light_layout],
-    //         push_constant_ranges: &[],
-    //     });
+        let pipeline_layout = context.device().create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("pipeline_layout"),
+            bind_group_layouts: &[camera_layout, texture_layout],
+            push_constant_ranges: &[],
+        });
         
-    //     context.device().create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-    //         label: Some("render_pipeline"),
-    //         layout: Some(&pipeline_layout),
-    //         vertex: wgpu::VertexState {
-    //             module: &shader,
-    //             entry_point: "vs_main",
-    //             buffers: &[Vertex::desc()],
-    //             compilation_options: wgpu::PipelineCompilationOptions::default(),
-    //         },
-    //         fragment: Some(wgpu::FragmentState {
-    //             module: &shader,
-    //             entry_point: "fs_main",
-    //             targets: &[Some(wgpu::ColorTargetState {
-    //                 format: context.format(),
-    //                 blend: Some(wgpu::BlendState::REPLACE),
-    //                 write_mask: wgpu::ColorWrites::ALL,
-    //             })],
-    //             compilation_options: wgpu::PipelineCompilationOptions::default(),
-    //         }),
-    //         primitive: wgpu::PrimitiveState {
-    //             topology: wgpu::PrimitiveTopology::TriangleList,
-    //             strip_index_format: None,
-    //             front_face: wgpu::FrontFace::Ccw,
-    //             cull_mode: Some(wgpu::Face::Back),
-    //             polygon_mode: wgpu::PolygonMode::Fill,
-    //             unclipped_depth: false,
-    //             conservative: false,
-    //         },
-    //         depth_stencil: Some(wgpu::DepthStencilState {
-    //             format: context.depth_stencil_format(),
-    //             depth_write_enabled: true,
-    //             depth_compare: wgpu::CompareFunction::Less,
-    //             stencil: wgpu::StencilState::default(),
-    //             bias: wgpu::DepthBiasState::default(),
-    //         }),
-    //         multisample: wgpu::MultisampleState {
-    //             count: 1,
-    //             mask: !0,
-    //             alpha_to_coverage_enabled: false,
-    //         },
-    //         multiview: None,
-    //         cache: None,
-    //     })
-    // }
+        context.device().create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("render_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: &[Vertex::desc(),
+                    Self::instance_buffer_layout()
+                ],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: context.format(),
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: context.depth_stencil_format(),
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        })
+    }
 
 
 
-    // COMPUTE
+    // =========== COMPUTE =================
     fn create_compute_bind_group_layout(context: &Context) -> wgpu::BindGroupLayout {
         context.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("compute_bind_group_layout"),
@@ -873,12 +870,10 @@ impl ClothSimApp {
         ) -> (wgpu::Buffer, wgpu::BindGroup) {
         let sim_uniform = SimulationUniform {
             dt: TIME_SCALE,
-            // bounds: BOUNDS,
-            // damping: DAMPING,
             radius: RADIUS * PARTICLE_SCALE,
-            // _pad0: 0.0,
+            _pad1: [0.0, 0.0],
             gravity: GRAVITY,
-            _pad1: 0.0,
+            _gravity_pad: 0.0,
         };
     
         let sim_uniform_buffer = context.device().create_buffer_init(
@@ -965,17 +960,48 @@ impl ClothSimApp {
 
 impl App for ClothSimApp {
     fn render(&self, render_pass: &mut wgpu::RenderPass<'_>) {
-        // Set pipeline, buffers
+
+        // Note : 
+        //      - Vertex buffer : Geometry for 1 sphere (positions, normals, uvs)
+        //      - Index buffer : Triangle indices for 1 sphere
+        //      - ...
+        //      - Use those buffers to compute sphere geometry, then draw them as many times as we need.
+        //      - They are drawing Models we pass to our pipelines 
+        //      - ...
+        //      - Instance buffer : updated position of each cloth particle 
+
+        // =====================
+        //     MAIN GLOBE
+        //======================
+        // Globe render pipeline
         render_pass.set_pipeline(&self.render_pipeline);
+        // Globe vertex&Index buffers
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        //Bind Groups
+        // Bind groupes (camera, texture, light)
         render_pass.set_bind_group(0, self.camera.bind_group(), &[]);
         render_pass.set_bind_group(1, &self.texture_bind_group, &[]);
         render_pass.set_bind_group(2, &self.light_bind_group, &[]);
+        // Draw main Globe
+        render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+
+        //=========================
+        //     CLOTH PARTICLES
+        //=========================
+        // NOTE : for cloth = mesh of globes, we just reuse vertex and index buffer of main globe
+        // Cloth render pipeline
+        render_pass.set_pipeline(&self.cloth_pipeline);
+        // Cloth vertex buffer -- same as globe
+        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+
+        // INSTANCE buffer
+        render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+
 
         // Draw
-        render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+        render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instance_count);
+        
     }
 
     fn render_gui(&mut self, egui_ctx: &egui::Context, context: &Context) {
@@ -1048,12 +1074,10 @@ impl App for ClothSimApp {
         // TODO add simul and substep which is number of simul per delta time
         let sim_uniform = SimulationUniform {
             dt: self.time_scale * delta_time,
-            // bounds: self.bounds,
-            // damping: self.damping,
             radius: RADIUS * PARTICLE_SCALE,
-            // _pad0: 0.0,
+            _pad1: [0.0, 0.0],
             gravity: self.gravity,
-            _pad1: 0.0,
+            _gravity_pad: 0.0,
         };
 
         context.queue().write_buffer(

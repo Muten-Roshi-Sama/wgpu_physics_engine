@@ -6,15 +6,17 @@
 // .wgsl : to update the movement matrix
 // 
 
+// 
+
 
 struct SimulationData {
-    dt: f32,                // 60fps eq. 0.016f
-    // bounds: f32,
-    // damping: f32,
+    dt: f32,
     radius: f32,
-    gravity: vec3<f32>,
-    _pad1: f32,
-}
+    _pad1: vec2<f32>,
+    //
+    gravity: vec3<f32>,   // wgpu treats vec3 as vec4 (16bytes) --> add 4bytes padding
+    _gravity_pad: f32,
+} // 4+4 + vec3 + 4 = 8 + 16 = 24 bytes ---> 32-24 = 8 bytes padding
 
 struct Particle {
     /*
@@ -35,73 +37,38 @@ struct Particle {
 @compute @workgroup_size(64)    // compute shader entry point
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
-    // // Particle index
-    // let index = global_id.x;
+    // Particle index
+    let index = global_id.x;
     
-    // // Bounds check
-    // if (index >= arrayLength(&particles)) { return; }
+    // Array bounds check
+    if (index >= arrayLength(&particles)) { return; }
     
-    // var particle = particles[index];
+    var particle = particles[index];
     
-    // // Update Gravity : v' = v + g*dt
-    // particle.velocity.x += sim_data.gravity.x * sim_data.dt;
-    // particle.velocity.y += sim_data.gravity.y * sim_data.dt;
-    // particle.velocity.z += sim_data.gravity.z * sim_data.dt;
+    // Gravity : v' = v + g*dt
+    particle.velocity.x += sim_data.gravity.x * sim_data.dt;
+    particle.velocity.y += sim_data.gravity.y * sim_data.dt;
+    particle.velocity.z += sim_data.gravity.z * sim_data.dt;
     
-    // // get current pos
-    // var pos = vec3<f32>(
-    //     particle.model_matrix[3][0],
-    //     particle.model_matrix[3][1],
-    //     particle.model_matrix[3][2]
-    // );
+    // get current pos
+    var pos = vec3<f32>(
+        particle.model_matrix[3][0],
+        particle.model_matrix[3][1],
+        particle.model_matrix[3][2]
+    );
     
-    // // Update position: x' = x + v*dt
-    // pos += particle.velocity.xyz * sim_data.dt;
+    // Update position: x' = x + v*dt
+    pos += particle.velocity.xyz * sim_data.dt;
     
-    // // Write new pos to model matrix
-    // particle.model_matrix[3][0] = pos.x;
-    // particle.model_matrix[3][1] = pos.y;
-    // particle.model_matrix[3][2] = pos.z;
+    // Write new pos to model matrix
+    particle.model_matrix[3][0] = pos.x;
+    particle.model_matrix[3][1] = pos.y;
+    particle.model_matrix[3][2] = pos.z;
     
 
 
-    // // ===============================
-    // //     Bound checks + damping
-    // // ===============================
-    // let r = sim_data.radius;
-    // // X
-    // if (pos.x < -sim_data.bounds + r && particle.velocity.x < 0.0) {
-    //     pos.x = -sim_data.bounds + r;
-    //     particle.velocity.x = -particle.velocity.x;
-    // }
-    // if (pos.x > sim_data.bounds - r && particle.velocity.x > 0.0) {
-    //     pos.x = sim_data.bounds - r;
-    //     particle.velocity.x = -particle.velocity.x;
-    // }
-
-    // // Y
-    // if (pos.y < -sim_data.bounds + r && particle.velocity.y < 0.0) {
-    //     pos.y = -sim_data.bounds + r;
-    //     particle.velocity.y = -particle.velocity.y;
-    // }
-    // if (pos.y > sim_data.bounds - r && particle.velocity.y > 0.0) {
-    //     pos.y = sim_data.bounds - r;
-    //     particle.velocity.y = -particle.velocity.y;
-    // }
-
-    // // Z
-    // if (pos.z < -sim_data.bounds + r && particle.velocity.z < 0.0) {
-    //     pos.z = -sim_data.bounds + r;
-    //     particle.velocity.z = -particle.velocity.z;
-    // }
-    // if (pos.z > sim_data.bounds - r && particle.velocity.z > 0.0) {
-    //     pos.z = sim_data.bounds - r;
-    //     particle.velocity.z = -particle.velocity.z;
-    // }
-
-
-    // // Write updated particle back
-    // particles[index] = particle;
+    // Write updated particle back
+    particles[index] = particle;
 }
 
 
