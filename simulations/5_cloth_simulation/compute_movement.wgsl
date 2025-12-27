@@ -8,17 +8,20 @@
 
 // 
 
-
+// Same as in forces.wgsl
 struct SimulationData {
     dt: f32,
     radius: f32,
     globe_radius: f32,  // to compute collisions
-    _pad1: f32,
+    mass: f32,          //=16bytes
     //
-    gravity: vec3<f32>,   // wgpu treats vec3 as vec4 (16bytes) --> add 4bytes padding
-    _gravity_pad: f32,
-} // 4+4 + vec3 + 4 = 8 + 16 = 24 bytes ---> 32-24 = 8 bytes padding
+    _pad2: vec3<u32>,   //=32bytes
+    grid_width: u32,
+} // =32bytes
 
+
+
+// Same as in forces.wgsl
 struct Particle {
     /*
         model Matrix (no rotation)
@@ -26,41 +29,55 @@ struct Particle {
             0      Scaley, 0       Ty
             0,     0,      Scalez  Tz
      */
-    model_matrix: mat4x4<f32>,      // rotation; scale; translation
-    velocity: vec4<f32>,           // xyz velocity, w unused (padding)
-    // accelleration: vec3<f32>,  // controlled by gravity
-}
+    model_matrix: mat4x4<f32>,      // POSITION : rotation; scale; translation
+    velocity: vec4<f32>,           // VELOCITY : xyz velocity, w unused (padding)
+    force: vec4<f32>,              // FORCE    : xyz force, w unused (padding)
+} // 48 + 16 + 16 = 80 bytes
+
+
+
+
 
 @group(0) @binding(0) var<uniform> sim_data: SimulationData;                 // small binding to read
 @group(0) @binding(1) var<storage, read_write> particles: array<Particle>;  // bigger storage for R/W
 
 
+
+
+
+
 @compute @workgroup_size(64)    // compute shader entry point
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    /*  Methodology :
+        - get index
+        - get forces computations from forces.wgsl
+        - Compute velocity based on forces
+        - COLLISIONS :
+            - reflect particle velocity if its inside the globe
+     */
 
-    // Particle index
+
+    // ======= GET ========
     let index = global_id.x;
-    
-    // Array bounds check
-    if (index >= arrayLength(&particles)) { return; }
-    
+    if (index >= arrayLength(&particles)) { return; } // Array bounds check
     var particle = particles[index];
-    
-    // Gravity : v' = v + g*dt
-    particle.velocity.x += sim_data.gravity.x * sim_data.dt;
-    particle.velocity.y += sim_data.gravity.y * sim_data.dt;
-    particle.velocity.z += sim_data.gravity.z * sim_data.dt;
-    
-    // get current pos
-    var pos = vec3<f32>(
-        particle.model_matrix[3][0],
-        particle.model_matrix[3][1],
-        particle.model_matrix[3][2]
-    );
+    var pos = get_pos(index);
+    var vel = particles[index].velocity;
+
+
+
+    // ======= UPDATE VELOCITY & POSITION ========
+    let force = particle.force.xyz;
+    let accel = force / sim_data.mass;   // a = F/m
+
+    // Update velocity: v' = v + a*dt
+    vel = vel + vec4<f32>(accel * sim_data.dt, 0.0);
     
     // Update position: x' = x + v*dt
-    pos += particle.velocity.xyz * sim_data.dt;
+    pos += vel.xyz * sim_data.dt;
     
+
+
     // ---- COLLISIONS -------
     /*
         Reflection: v2 = v1 - 2 * (v1 · n) * n
@@ -73,17 +90,15 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     let dist = length(pos);  // distance from origin
     let min_dist = sim_data.globe_radius + sim_data.radius;
+    // If inside the globe, reflect vel
     if (dist < min_dist) {
         let dir = normalize(pos);
         pos = dir * min_dist;
 
         // Reflect particle velocity
-        let v_dot_n = dot(particle.velocity.xyz, dir);
-        particle.velocity = particle.velocity - 2.0 * v_dot_n * vec4<f32>(dir, 0.0);
+        let v_dot_n = dot(vel.xyz, dir);
+        vel = vel - 2.0 * v_dot_n * vec4<f32>(dir, 0.0);
     }
-
-
-
 
 
     // Write new pos to model matrix
@@ -91,8 +106,23 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     particle.model_matrix[3][1] = pos.y;
     particle.model_matrix[3][2] = pos.z;
     
+    // Write nezw velocity
+    particle.velocity = vel;
+
     // Write updated particle back
     particles[index] = particle;
+}
+
+
+
+// ======= Helpers =======
+
+fn get_pos(index: u32) -> vec3<f32> {
+    return vec3<f32>(
+        particles[index].model_matrix[3][0],
+        particles[index].model_matrix[3][1],
+        particles[index].model_matrix[3][2]
+    );
 }
 
 

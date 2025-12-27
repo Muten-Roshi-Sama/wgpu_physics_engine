@@ -49,15 +49,20 @@ use wgpu_bootstrap::{
 
 // =========== CONFIGURATIONS =============
 
+//render shaders
 const GLOBE_SHADER_FILE: &str = "globe_shader.wgsl";
 const CLOTH_SHADER_FILE: &str = "cloth_instances.wgsl";
+// compute shaders
 const COMPUTE_SHADER_FILE: &str = "compute_movement.wgsl";
+const FORCES_SHADER_FILE: &str = "forces.wgsl";
 
+// textures
+const TEXTURE_FILE: &str = "../../textures/grey.png";
+const CLOTH_PARTICLES_TEXTURE_FILE: &str = "../../textures/red.png";
 // const TEXTURE_FILE: &str = "../../textures/texture.png";
 // const TEXTURE_FILE: &str = "../../textures/earth2048.bmp";
 // const TEXTURE_FILE: &str = "../../textures/moon1024.bmp";
-const TEXTURE_FILE: &str = "../../textures/grey.png";
-const CLOTH_PARTICLES_TEXTURE_FILE: &str = "../../textures/red.png";
+
 
 // ============= PARAMS =====================
 
@@ -76,7 +81,7 @@ const _PAD: u32 = 0u32;
 
 // Physics
 const TIME_SCALE: f32 = 1.0;
-const GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
+const GRAVITY: f32 = -9.81;
 
 // Cloth 
 const CLOTH_PARTICLES_PER_SIDE: u32 = 20;
@@ -96,7 +101,7 @@ const BEND_DAMPING: f32 = 0.15;
 
 
 
-// =========== STRUCTS & IMPL ============
+// =========== main globe ============
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
@@ -104,39 +109,6 @@ struct Vertex {
     normal: [f32; 3],
     uv: [f32; 2]
 }
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct LightUniform {
-    light: [f32; 4],          // maps to vec4<f32> in WGSL
-    ks: f32,                  // specular strength & shininess exponent
-    shininess: f32,           // α-shininess exponent
-    compute_specular: u32,    // whether to use specular component
-    _pad: u32,                // padding to 16-byte alignment
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct Particle {
-    model_matrix: [f32; 16],  // 4x4 matrix
-    velocity: [f32; 4],       // velocity vector (x, y, z, w)
-}
-
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct SimulationUniform {
-    dt: f32,
-    radius: f32,
-    globe_radius: f32,
-    _pad1: f32,
-    gravity: [f32; 3],
-    _gravity_pad: f32,
-}
-
-
-
-// ======== IMPL ============
 impl Vertex {
     fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -167,69 +139,147 @@ impl Vertex {
 }
 
 
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct LightUniform {
+    light: [f32; 4],          // maps to vec4<f32> in WGSL
+    ks: f32,                  // specular strength & shininess exponent
+    shininess: f32,           // α-shininess exponent
+    compute_specular: u32,    // whether to use specular component
+    _pad: u32,                // padding to 16-byte alignment
+}
 
 
+// ============ CLOTH =================
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct Particle {
+    model_matrix: [f32; 16],  // 4x4 matrix
+    velocity: [f32; 4],       // velocity vector (x, y, z, w)
+    force: [f32; 4],          // force vector (x, y, z, w)
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct SimulationData {
+    dt: f32,
+    radius: f32,
+    globe_radius: f32,
+    mass: f32,
+    _pad2: [f32; 3],
+    grid_width: u32,
+}
+
+
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct PhysicsConstants {
+    k_struct: f32,
+    k_shear: f32,
+    k_bend: f32,
+    //
+    damping_c: f32,
+    rest_len_struct: f32,
+    rest_len_shear: f32,
+    rest_len_bend: f32,
+    //
+    k_contact: f32,
+    //
+    mu: f32,
+    //
+    gravity: f32,
+    _pad0: [f32;2],
+}
+
+// == Init buffers ===
+struct InitVars {
+    init_light_uniform: LightUniform,
+    init_sim_data: SimulationData,
+    init_physics_constants: PhysicsConstants,
+}
 
 
 
 // ========== APP ==============
 pub struct ClothSimApp {
-    // Rendering
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    render_pipeline: wgpu::RenderPipeline,
-    num_indices: u32,
+    // ======= GLOVE =========
+
+    // Globe geometry
+    globe_vertex_buffer: wgpu::Buffer,
+    globe_index_buffer: wgpu::Buffer,
+    globe_num_indices: u32,
+    stack_count: usize,
+    sector_count: usize,
+    //
+    // globe render pipeline
+    globe_pipeline: wgpu::RenderPipeline,
 
     // Bind gorups
     camera: OrbitCamera,
     texture_bind_group: wgpu::BindGroup,
     light_bind_group: wgpu::BindGroup,
     light_buffer: wgpu::Buffer,
-    fps: f32,
+    
 
-    // main globe
+    // Vars
     globe_radius: f32,
 
-    // Cloth
-    cloth_texture_bind_group: wgpu::BindGroup, //particules inst = red
-    cloth_particle_radius: f32,
+
+
+    // ==== Cloth =====
+
+    // cloth geometry
+
+    // particles 
     instance_buffer: wgpu::Buffer,
     instance_count: u32,
+
+    // cloth
+    cloth_particles_texture_bind_group: wgpu::BindGroup, //particules inst = red
     cloth_pipeline: wgpu::RenderPipeline,
 
-    // Computing
+    // Vars
+    cloth_particle_radius: f32,
+
+    // ===== Computing ======
+
+    // Buffers
+    sim_data_buffer: wgpu::Buffer,
+    physics_constants_buffer: wgpu::Buffer, 
+
+    // Compute movement
     compute_pipeline: wgpu::ComputePipeline,
     compute_bind_group: wgpu::BindGroup,
-    sim_uniform_buffer: wgpu::Buffer,
+    
 
+    // Compute forces
+    forces_pipeline: wgpu::ComputePipeline,
+    forces_bind_group: wgpu::BindGroup,
+    
+    
     // Physics
     time_scale:f32,
-    gravity: [f32;3],
-    // bounds: f32,
-    // damping: f32,
+    gravity: f32,
 
 
-    // Eframe
+    // ==== UI ======
+    fps: f32,
     light_pos: [f32; 3],
     checkbox_specular: bool,   // ui checkbox
     ks: f32,
     shininess: f32,
 
-    //geo
-    stack_count: usize,   // TODO: for now, display only....
-    sector_count: usize,  // TODO: ... regenerating requires rebuilding buffers
 }
 
+
+
+
 impl ClothSimApp {
-    // Bind Groups lyouts   
-            /* 
-            - GROUP(0) Camera
-            - GROUP(1) Texture & Sampler
-            - GROUP(2) Light Layout
-            */ 
-
-
     pub fn new(context: &Context) -> Self {
+
+        let InitVars { init_light_uniform, init_sim_data, init_physics_constants } = Self::init_vars();
 
         // Camera Setup
         let camera = Self::setup_camera(context);
@@ -240,11 +290,11 @@ impl ClothSimApp {
         //   GLobe stuff 
         // ================
         // 1. Generate geometry
-        let (vertices, indices, num_indices) = Self::create_sphere_geometry();
+        let (vertices, indices, globe_num_indices) = Self::create_sphere_geometry();
 
         // 2. gpu buff
-        let vertex_buffer = Self::create_vertex_buffer(context, &vertices);
-        let index_buffer = Self::create_index_buffer(context, &indices);
+        let globe_vertex_buffer = Self::create_vertex_buffer(context, &vertices);
+        let globe_index_buffer = Self::create_index_buffer(context, &indices);
 
         // 3. Bind Groups lyouts  - GROUP(1) Texture & Sampler
         let texture_bind_group_layout = Self::create_texture_bind_group_layout(context);
@@ -263,11 +313,12 @@ impl ClothSimApp {
         let (light_buffer, light_bind_group) = Self::create_light_resources(
             context,
             &light_bind_group_layout,
+            &init_light_uniform
         );
 
 
         // 5. Render Pipeline
-        let render_pipeline = Self::create_globe_render_pipeline(
+        let globe_pipeline = Self::create_globe_render_pipeline(
             context,
             &camera_bind_group_layout,
             &texture_bind_group_layout,
@@ -294,11 +345,14 @@ impl ClothSimApp {
         let instance_buffer = Self::create_instance_buffer(context, &instances);  // then called in render pipeline !
 
         // 3. Textures for red cloth particles
-        let cloth_texture_bind_group = Self::load_texture_and_create_bind_group(
+        let cloth_particles_texture_bind_group = Self::load_texture_and_create_bind_group(
             context,
             &texture_bind_group_layout,
             CLOTH_PARTICLES_TEXTURE_FILE,
         );
+        // Texture for cloth mesh
+        // let cloth_texture_bind_group = Self::load_texture_and_create_bind_group(
+
 
         // 
         let cloth_pipeline = Self::create_cloth_render_pipeline(
@@ -312,54 +366,103 @@ impl ClothSimApp {
         // ===========================
         //       Compute Setup
         // ===========================
-        let compute_bind_group_layout = Self::create_compute_bind_group_layout(context);
-        let (sim_uniform_buffer, compute_bind_group) = Self::create_compute_resources(context, &compute_bind_group_layout, &instance_buffer);
-        let compute_pipeline = Self::create_compute_pipeline(context, &compute_bind_group_layout);
+        // Buffers
+        let physics_constants_buffer = context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Physics Constants Buffer"),
+            contents: bytemuck::bytes_of(&init_physics_constants),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let sim_data_storage_buffer = context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Simulation Data Storage Buffer (forces)"),
+            contents: bytemuck::bytes_of(&init_sim_data),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
 
+
+
+        // Compute forces
+        let forces_bind_group_layout = Self::create_forces_bind_group_layout(context);
+        let forces_bind_group = Self::create_forces_bind_group(
+            context,
+            &forces_bind_group_layout,
+            &physics_constants_buffer,
+            &sim_data_storage_buffer,
+            &instance_buffer,
+        );
+        let forces_pipeline = Self::create_compute_pipeline(context, &forces_bind_group_layout, FORCES_SHADER_FILE, "Forces Compute Pipeline");
+
+
+        // Compute movement 
+        let compute_bind_group_layout = Self::create_compute_bind_group_layout(
+            context,
+            wgpu::BufferBindingType::Uniform,
+            wgpu::BufferBindingType::Storage { read_only: false },
+        );
+        let (sim_data_buffer, compute_bind_group) = Self::create_compute_resources(
+            context, &compute_bind_group_layout, &instance_buffer, &init_sim_data, "Simulation Data Buffer", "compute_bind_group"
+        );
+        let compute_pipeline = Self::create_compute_pipeline(context, &compute_bind_group_layout, COMPUTE_SHADER_FILE, "Compute Movement Pipeline");
 
 
         Self {
-            // Globe
-            vertex_buffer,
-            index_buffer,
-            render_pipeline,
-            num_indices,
+            // ======= GLOVE =========
+
+            // Globe geometry
+            globe_vertex_buffer,
+            globe_index_buffer,
+            globe_num_indices,
+            stack_count: STACK_COUNT,
+            sector_count: SECTOR_COUNT,
+            // globe render pipeline
+            globe_pipeline,
 
             // Bind Groups
             camera,
             texture_bind_group,
             light_bind_group,
             light_buffer,
-            fps: 0.0,
-
-            // main globe
+            
+            // vars
             globe_radius: RADIUS,
 
-            // CLOTH
-            cloth_texture_bind_group,
-            cloth_particle_radius: CLOTH_PARTICLES_RADIUS,
+
+            // ==== Cloth =====
+            // cloth geometry
+            // particles 
             instance_buffer,
             instance_count,
+            // cloth
+            cloth_particles_texture_bind_group,
             cloth_pipeline,
 
-            // Coompute
+            // vars
+            cloth_particle_radius: CLOTH_PARTICLES_RADIUS,
+            
+            
+            // ===== Computing ======
+            // Buffers
+            sim_data_buffer,
+            physics_constants_buffer,
+
+            // Compute movement
             compute_pipeline,
             compute_bind_group,
-            sim_uniform_buffer,
+            
+            // Compute forces
+            forces_pipeline,
+            forces_bind_group,
 
-            // Physics
+            // Physics vars
             time_scale: TIME_SCALE,
             gravity: GRAVITY,
 
-            // Eframe
+            // ==== UI ======
+            fps: 0.0,
             light_pos: [LIGHT_POS[0], LIGHT_POS[1], LIGHT_POS[2]],
             checkbox_specular: true,
             ks: KS,
             shininess: SHININESS,
-
-            // geometry
-            stack_count: STACK_COUNT,
-            sector_count: SECTOR_COUNT,
+            
         }
 
     // --- end of new() ---
@@ -369,6 +472,41 @@ impl ClothSimApp {
     // =============================================
     //           Helpers
     // =============================================
+
+    
+    fn init_vars() -> InitVars {
+        InitVars {
+            init_light_uniform: LightUniform {
+                light: LIGHT_POS,
+                ks: KS,
+                shininess: SHININESS,
+                compute_specular: 0u32,
+                _pad: _PAD,
+            },
+            init_sim_data: SimulationData {
+                dt: TIME_SCALE,
+                radius: CLOTH_PARTICLES_RADIUS,
+                globe_radius: RADIUS,
+                mass: MASS,
+                _pad2: [0.0, 0.0, 0.0],
+                grid_width: CLOTH_PARTICLES_PER_SIDE,
+                
+            },
+            init_physics_constants: PhysicsConstants {
+                k_struct: STRUCTURAL_STIFFNESS,
+                k_shear: SHEAR_STIFFNESS,
+                k_bend: BEND_STIFFNESS,
+                damping_c: STRUCTURAL_DAMPING,
+                rest_len_struct: CLOTH_SIZE / (CLOTH_PARTICLES_PER_SIDE as f32 - 1.0),
+                rest_len_shear: (CLOTH_SIZE / (CLOTH_PARTICLES_PER_SIDE as f32 - 1.0)) * (2.0f32).sqrt(),
+                rest_len_bend: (CLOTH_SIZE / (CLOTH_PARTICLES_PER_SIDE as f32 - 1.0)) * 2.0,
+                k_contact: 1000.0,
+                mu: 0.5,
+                gravity: GRAVITY,
+                _pad0: [0.0, 0.0],
+            },
+        }
+    }
 
     //Camera
     fn setup_camera(context: &Context) -> OrbitCamera {
@@ -386,7 +524,6 @@ impl ClothSimApp {
         camera
     }
     
-
     // Globe
     fn create_sphere_geometry() -> (Vec<Vertex>, Vec<u32>, u32) {
         let (raw_vertices, indices) =
@@ -397,8 +534,8 @@ impl ClothSimApp {
             .map(|(pos, normal, uv)| Vertex { position: pos, normal, uv })
             .collect();
         
-        let num_indices = indices.len() as u32;
-        (vertices, indices, num_indices)
+        let globe_num_indices = indices.len() as u32;
+        (vertices, indices, globe_num_indices)
     }
     fn create_vertex_buffer(context: &Context, vertices: &[Vertex]) -> wgpu::Buffer {
         context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -598,21 +735,15 @@ impl ClothSimApp {
     fn create_light_resources(
         context: &Context,
         layout: &wgpu::BindGroupLayout,
+        init_light_uniform: &LightUniform,
         ) -> (wgpu::Buffer, wgpu::BindGroup) {
 
         // Light init params
-        let initial_light = LightUniform {
-            light: LIGHT_POS,
-            ks: KS,
-            shininess: SHININESS,
-            compute_specular: 0u32, // ? compute specular in shader ?
-            _pad: _PAD,
-            
-        };
+        // init_light_uniform used down here but defined in init_vars()
 
         let light_buffer = context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Light Buffer"),
-            contents: bytemuck::bytes_of(&initial_light),
+            contents: bytemuck::bytes_of(init_light_uniform),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -754,6 +885,7 @@ impl ClothSimApp {
                         c3.x, c3.y, c3.z, c3.w,
                     ],
                     velocity: [vx, vy, vz, 0.0],
+                    force: [0.0, 0.0, 0.0, 0.0],
                 });
             }
         }
@@ -857,11 +989,12 @@ impl ClothSimApp {
 
 
     // =========== COMPUTE =================
-    fn create_compute_bind_group_layout(context: &Context) -> wgpu::BindGroupLayout {
+    // Forces
+    fn create_forces_bind_group_layout(context: &Context) -> wgpu::BindGroupLayout {
         context.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("compute_bind_group_layout"),
+            label: Some("forces_bind_group_layout"),
             entries: &[
-                // @binding(0): SimulationData uniform
+                // binding 0: PhysicsConstants uniform
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -872,9 +1005,20 @@ impl ClothSimApp {
                     },
                     count: None,
                 },
-                // @binding(1): Particle storage buffer (read_write)
+                // binding 1: SimulationData storage (read_write)
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // binding 2: Particles storage buffer (read_write)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: false },
@@ -887,35 +1031,89 @@ impl ClothSimApp {
         })
     }
     
-    fn create_compute_resources(
+    fn create_forces_bind_group(
         context: &Context,
         layout: &wgpu::BindGroupLayout,
-        instance_buffer: &wgpu::Buffer,
-        ) -> (wgpu::Buffer, wgpu::BindGroup) {
-        let sim_uniform = SimulationUniform {
-            dt: TIME_SCALE,
-            radius: CLOTH_PARTICLES_RADIUS,
-            globe_radius: RADIUS,
-            _pad1: 0.0,
-            gravity: GRAVITY,
-            _gravity_pad: 0.0,
-        };
-    
-        let sim_uniform_buffer = context.device().create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("Simulation Uniform Buffer"),
-                contents: bytemuck::bytes_of(&sim_uniform),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            }
-        );
-    
-        let compute_bind_group = context.device().create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("compute_bind_group"),
+        physics_constants_buffer: &wgpu::Buffer,
+        sim_data_storage_buffer: &wgpu::Buffer,
+        particles_buffer: &wgpu::Buffer,
+        ) -> wgpu::BindGroup {
+        context.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("forces_bind_group"),
             layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: sim_uniform_buffer.as_entire_binding(),
+                    resource: physics_constants_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: sim_data_storage_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: particles_buffer.as_entire_binding(),
+                },
+            ],
+        })
+    }
+    
+    // Movement
+    fn create_compute_bind_group_layout(
+        context: &Context,
+        uniform_type: wgpu::BufferBindingType,
+        storage_type: wgpu::BufferBindingType,
+        ) -> wgpu::BindGroupLayout {
+        context.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("compute_bind_group_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: uniform_type,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: storage_type,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        })
+    }
+    
+    fn create_compute_resources<T: bytemuck::Pod>(
+        context: &Context,
+        layout: &wgpu::BindGroupLayout,
+        instance_buffer: &wgpu::Buffer,
+        uniform: &T,
+        uniform_label: &str,
+        bind_group_label: &str,
+        ) -> (wgpu::Buffer, wgpu::BindGroup) {
+        let uniform_buffer = context.device().create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some(uniform_label),
+                contents: bytemuck::bytes_of(uniform),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }
+        );
+    
+        let bind_group = context.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(bind_group_label),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -924,30 +1122,31 @@ impl ClothSimApp {
             ],
         });
     
-        (sim_uniform_buffer, compute_bind_group)
+        (uniform_buffer, bind_group)
     }
-    
     fn create_compute_pipeline(
         context: &Context,
         layout: &wgpu::BindGroupLayout,
+        shader_file: &str,
+        label: &str,
         ) -> wgpu::ComputePipeline {
-        let shader_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(COMPUTE_SHADER_FILE);
+        let shader_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(shader_file);
         let shader_src = std::fs::read_to_string(&shader_path)
             .expect("Failed to read compute shader");
-        
+    
         let compute_shader = context.device().create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Compute Shader"),
+            label: Some(label),
             source: wgpu::ShaderSource::Wgsl(shader_src.into()),
         });
     
         let pipeline_layout = context.device().create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Compute Pipeline Layout"),
+            label: Some(&format!("{} Pipeline Layout", label)),
             bind_group_layouts: &[layout],
             push_constant_ranges: &[],
         });
     
         context.device().create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Compute Pipeline"),
+            label: Some(label),
             layout: Some(&pipeline_layout),
             module: &compute_shader,
             entry_point: "main",
@@ -955,6 +1154,103 @@ impl ClothSimApp {
             cache: None,
         })
     }
+    
+    
+    
+    
+    // fn create_compute_bind_group_layout(context: &Context) -> wgpu::BindGroupLayout {
+    //     context.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    //         label: Some("compute_bind_group_layout"),
+    //         entries: &[
+    //             // @binding(0): SimulationData uniform
+    //             wgpu::BindGroupLayoutEntry {
+    //                 binding: 0,
+    //                 visibility: wgpu::ShaderStages::COMPUTE,
+    //                 ty: wgpu::BindingType::Buffer {
+    //                     ty: wgpu::BufferBindingType::Uniform,
+    //                     has_dynamic_offset: false,
+    //                     min_binding_size: None,
+    //                 },
+    //                 count: None,
+    //             },
+    //             // @binding(1): Particle storage buffer (read_write)
+    //             wgpu::BindGroupLayoutEntry {
+    //                 binding: 1,
+    //                 visibility: wgpu::ShaderStages::COMPUTE,
+    //                 ty: wgpu::BindingType::Buffer {
+    //                     ty: wgpu::BufferBindingType::Storage { read_only: false },
+    //                     has_dynamic_offset: false,
+    //                     min_binding_size: None,
+    //                 },
+    //                 count: None,
+    //             },
+    //         ],
+    //     })
+    // }
+    
+    // fn create_compute_resources(
+    //     context: &Context,
+    //     layout: &wgpu::BindGroupLayout,
+    //     instance_buffer: &wgpu::Buffer,
+    //     init_sim_data: &SimulationData,
+    //     ) -> (wgpu::Buffer, wgpu::BindGroup) {
+        
+    //     // init_sim_data used down here but defined in init_vars()
+    
+    //     let sim_data_buffer = context.device().create_buffer_init(
+    //         &wgpu::util::BufferInitDescriptor {
+    //             label: Some("Simulation Uniform Buffer"),
+    //             contents: bytemuck::bytes_of(&init_sim_data),
+    //             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    //         }
+    //     );
+    
+    //     let compute_bind_group = context.device().create_bind_group(&wgpu::BindGroupDescriptor {
+    //         label: Some("compute_bind_group"),
+    //         layout,
+    //         entries: &[
+    //             wgpu::BindGroupEntry {
+    //                 binding: 0,
+    //                 resource: sim_data_buffer.as_entire_binding(),
+    //             },
+    //             wgpu::BindGroupEntry {
+    //                 binding: 1,
+    //                 resource: instance_buffer.as_entire_binding(),
+    //             },
+    //         ],
+    //     });
+    
+    //     (sim_data_buffer, compute_bind_group)
+    // }
+    
+    // fn create_compute_pipeline(
+    //     context: &Context,
+    //     layout: &wgpu::BindGroupLayout,
+    //     ) -> wgpu::ComputePipeline {
+    //     let shader_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(COMPUTE_SHADER_FILE);
+    //     let shader_src = std::fs::read_to_string(&shader_path)
+    //         .expect("Failed to read compute shader");
+        
+    //     let compute_shader = context.device().create_shader_module(wgpu::ShaderModuleDescriptor {
+    //         label: Some("Compute Shader"),
+    //         source: wgpu::ShaderSource::Wgsl(shader_src.into()),
+    //     });
+    
+    //     let pipeline_layout = context.device().create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    //         label: Some("Compute Pipeline Layout"),
+    //         bind_group_layouts: &[layout],
+    //         push_constant_ranges: &[],
+    //     });
+    
+    //     context.device().create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    //         label: Some("Compute Pipeline"),
+    //         layout: Some(&pipeline_layout),
+    //         module: &compute_shader,
+    //         entry_point: "main",
+    //         compilation_options: wgpu::PipelineCompilationOptions::default(),
+    //         cache: None,
+    //     })
+    // }
 
     fn dispatch_compute(&self, context: &Context) {
         let mut encoder = context.device().create_command_encoder(
@@ -963,9 +1259,23 @@ impl ClothSimApp {
             }
         );
         
+
+        // 1. Compute Forces
+        {
+            let mut forces_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Forces Pass"),
+                timestamp_writes: None,
+            });
+            forces_pass.set_pipeline(&self.forces_pipeline);
+            forces_pass.set_bind_group(0, &self.forces_bind_group, &[]);
+
+            let workgroup_count = (self.instance_count + 63) / 64;
+            forces_pass.dispatch_workgroups(workgroup_count, 1, 1);
+        }
+        // 2. Compute Movement
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Compute Pass"),
+                label: Some("Movement Pass"),
                 timestamp_writes: None,
             });
             compute_pass.set_pipeline(&self.compute_pipeline);
@@ -999,16 +1309,16 @@ impl App for ClothSimApp {
         //     MAIN GLOBE
         //======================
         // Globe render pipeline
-        render_pass.set_pipeline(&self.render_pipeline);
+        render_pass.set_pipeline(&self.globe_pipeline);
         // Globe vertex&Index buffers
-        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        render_pass.set_vertex_buffer(0, self.globe_vertex_buffer.slice(..));
+        render_pass.set_index_buffer(self.globe_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         // Bind groupes (camera, texture, light)
         render_pass.set_bind_group(0, self.camera.bind_group(), &[]);
         render_pass.set_bind_group(1, &self.texture_bind_group, &[]);
         render_pass.set_bind_group(2, &self.light_bind_group, &[]);
         // Draw main Globe
-        render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+        render_pass.draw_indexed(0..self.globe_num_indices, 0, 0..1);
 
         //=========================
         //     CLOTH PARTICLES
@@ -1017,18 +1327,18 @@ impl App for ClothSimApp {
         // Cloth render pipeline
         render_pass.set_pipeline(&self.cloth_pipeline);
         // Cloth vertex buffer -- same as globe
-        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        render_pass.set_vertex_buffer(0, self.globe_vertex_buffer.slice(..));
+        render_pass.set_index_buffer(self.globe_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
         // INSTANCE buffer
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
 
         //Bind grps
         render_pass.set_bind_group(0, self.camera.bind_group(), &[]);
-        render_pass.set_bind_group(1, &self.cloth_texture_bind_group, &[]);
+        render_pass.set_bind_group(1, &self.cloth_particles_texture_bind_group, &[]);
 
         // Draw
-        render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instance_count);
+        render_pass.draw_indexed(0..self.globe_num_indices, 0, 0..self.instance_count);
         
     }
 
@@ -1067,7 +1377,7 @@ impl App for ClothSimApp {
 
             // ====== Physics ======
             ui.heading("Physics");
-            ui.add(egui::Slider::new(&mut self.gravity[1], -20.0..=10.0).text("Gravity Y"));
+            ui.add(egui::Slider::new(&mut self.gravity, -20.0..=10.0).text("Gravity Y"));
             ui.add(egui::Slider::new(&mut self.time_scale, 0.0..=2.0).text("Time Scale"));
             ui.separator();
 
@@ -1110,20 +1420,20 @@ impl App for ClothSimApp {
         self.fps = 1.0 / delta_time;
 
         // TODO add simul and substep which is number of simul per delta time
-        let sim_uniform = SimulationUniform {
+        let sim_uniform = SimulationData {
             dt: self.time_scale * delta_time,
             radius: self.cloth_particle_radius,
             globe_radius: self.globe_radius,
-            _pad1: 0.0,
-            gravity: self.gravity,
-            _gravity_pad: 0.0,
+            mass: MASS,
+            _pad2: [0.0, 0.0, 0.0],
+            grid_width: CLOTH_PARTICLES_PER_SIDE,
+            
         };
 
-        context.queue().write_buffer(
-            &self.sim_uniform_buffer,
-            0,
-            bytemuck::bytes_of(&sim_uniform),
-        );
+        // Update buffers
+        context.queue().write_buffer(&self.sim_data_buffer,0,bytemuck::bytes_of(&sim_uniform),);
+        // context.queue().write_buffer(&self.physics_constants_buffer,0,bytemuck::bytes_of(&updated_physics_constants),);
+
 
         self.dispatch_compute(context);
 
