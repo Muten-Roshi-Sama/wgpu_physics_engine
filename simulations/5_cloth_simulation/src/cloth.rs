@@ -84,10 +84,12 @@ const TIME_SCALE: f32 = 1.0;
 const HZ : f32 = 480.0;
 const GRAVITY: f32 = -9.81;
 const SPEED_DAMP: f32 = 0.90;
+const COLLISION_K: f32 = 1000.0;
+const FRICTION_COEFF: f32 = 0.2;
 
 // Cloth 
 const CLOTH_PARTICLES_PER_SIDE: u32 = 40;
-const CLOTH_PARTICLES_RADIUS: f32 = 0.3;
+const CLOTH_PARTICLES_RADIUS: f32 = 0.1;
 const CLOTH_SIZE: f32 = 30.0;
 const CLOTH_CENTRAL_POS: [f32;3] = [0.0, 4.0 * RADIUS, 0.0];
 
@@ -555,8 +557,8 @@ impl ClothSimApp {
                 rest_len_struct: CLOTH_SIZE / (CLOTH_PARTICLES_PER_SIDE as f32 - 1.0),
                 rest_len_shear: (CLOTH_SIZE / (CLOTH_PARTICLES_PER_SIDE as f32 - 1.0)) * (2.0f32).sqrt(),
                 rest_len_bend: (CLOTH_SIZE / (CLOTH_PARTICLES_PER_SIDE as f32 - 1.0)) * 2.0,
-                k_contact: 50.0,
-                mu: 0.5,
+                k_contact: COLLISION_K,
+                mu: FRICTION_COEFF,
                 _pad0: 0.0,
             },
         }

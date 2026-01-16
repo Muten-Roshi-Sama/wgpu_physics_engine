@@ -84,24 +84,18 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // ======== OTHER FORCES ========
     // Gravity
     total_force += vec3<f32>(0.0, sim_data.mass * sim_data.gravity, 0.0);
-    // Contact
-    // Friction
 
-    // Store force (debugging)
-    // particle.force = vec4<f32>(total_force, 0.0);
-
-
-    // ======= UPDATE VELOCITY & POSITION ========
-    let accel = total_force / sim_data.mass;
-    vel += accel * sim_data.dt;
-    vel *= pow(sim_data.speed_damp, sim_data.dt); // some global damping
-    pos += vel * sim_data.dt;
+    
 
 
 
-
-    // ======== COLLISIONS ===========
+    // ======== COLLISION FORCE===========
     /*
+        Contact (elastic)
+        + Friction (tangential)
+
+
+        / OLD
         Reflection: v2 = v1 - 2 * (v1 · n) * n
             where :
                 v1 : init speed 
@@ -117,19 +111,54 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         if (dist > 1e-6) {
             let n = normalize(pos);
             let penetration = min_dist - dist;
-            pos += n * penetration;  // Push out
-            vel = vec3<f32>(0.0);    // Kill velocity
+
+            // Contact Force (elastic)
+            let F_contact = physics.k_contact * penetration * n;
+            total_force += F_contact;
+
+            // ======= FRICTION FORCE ========
+            let Ro = total_force;
+            let Ro_n_magnitude = dot(Ro, n);                    // magnitude
+            let Ro_n = Ro_n_magnitude * n;                // normal component
+            let Ro_t = Ro - Ro_n_magnitude * n;           // tangential component
+            let Ro_t_magnitude = length(Ro_t);
+
+            if (Ro_t_magnitude > 1e-6) {
+                let tangent = Ro_t / Ro_t_magnitude;    // unit tang dir
+                // Coulomb's law
+                let F_friction = -min(Ro_t_magnitude, physics.mu * abs(Ro_n_magnitude)) * tangent;
+                total_force += F_friction;
+            }
+        }
+    }
+
+
+    // ======= UPDATE VELOCITY & POSITION ========
+    let accel = total_force / sim_data.mass;
+    vel += accel * sim_data.dt;
+    vel *= pow(sim_data.speed_damp, sim_data.dt); // global damping
+    pos += vel * sim_data.dt;
+
+
+    // ======== BOUNDARIES ========
+    // must be after pos and vel computation ! 
+    // if not velocity buildup and particles passes through globe
+    let final_dist = length(pos);
+    let min_allowed = sim_data.globe_radius + sim_data.radius;
+
+    if (final_dist < min_allowed) {
+        if (final_dist > 1e-6) {
+            let n = normalize(pos);
+            pos = n * min_allowed;
+            vel = vec3<f32>(0.0);  // ZERO out velocity completely
         } else {
-            pos = vec3<f32>(0.0, 1.0, 0.0) * min_dist;
+            pos = vec3<f32>(0.0, min_allowed, 0.0);
             vel = vec3<f32>(0.0);
         }
-        // OLD refletion vector
-        // let n = normalize(pos);
-        // pos = n * min_dist;
-
-        // let v_dot_n = dot(vel, n);
-        // vel = vel - 2.0 * v_dot_n * n;
     }
+
+
+
 
 
 
@@ -142,5 +171,4 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     // Write updated particle back
     particles[pid] = particle;
-}
-
+    }
