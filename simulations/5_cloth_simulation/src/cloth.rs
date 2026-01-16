@@ -181,8 +181,9 @@ struct SimulationData {
     radius: f32,
     globe_radius: f32,
     mass: f32,
-    _pad2: [f32; 3],
     grid_width: u32,
+    gravity: f32,
+    _pad2: [f32; 2],
 }
 
 
@@ -194,7 +195,10 @@ struct PhysicsConstants {
     k_shear: f32,
     k_bend: f32,
     //
-    damping_c: f32,
+    k_damp_struct: f32,
+    k_damp_shear: f32,
+    k_damp_bend: f32,
+    //
     rest_len_struct: f32,
     rest_len_shear: f32,
     rest_len_bend: f32,
@@ -203,8 +207,7 @@ struct PhysicsConstants {
     //
     mu: f32,
     //
-    gravity: f32,
-    _pad0: [f32;2],
+    _pad0: f32,
 }
 
 // == Init buffers ===
@@ -531,22 +534,24 @@ impl ClothSimApp {
                 radius: CLOTH_PARTICLES_RADIUS,
                 globe_radius: RADIUS,
                 mass: MASS,
-                _pad2: [0.0, 0.0, 0.0],
                 grid_width: CLOTH_PARTICLES_PER_SIDE,
+                gravity: GRAVITY,
+                _pad2: [0.0, 0.0],
                 
             },
             init_physics_constants: PhysicsConstants {
                 k_struct: STRUCTURAL_STIFFNESS,
                 k_shear: SHEAR_STIFFNESS,
                 k_bend: BEND_STIFFNESS,
-                damping_c: STRUCTURAL_DAMPING,
+                k_damp_struct: STRUCTURAL_DAMPING,
+                k_damp_shear: SHEAR_DAMPING,
+                k_damp_bend: BEND_DAMPING,
                 rest_len_struct: CLOTH_SIZE / (CLOTH_PARTICLES_PER_SIDE as f32 - 1.0),
                 rest_len_shear: (CLOTH_SIZE / (CLOTH_PARTICLES_PER_SIDE as f32 - 1.0)) * (2.0f32).sqrt(),
                 rest_len_bend: (CLOTH_SIZE / (CLOTH_PARTICLES_PER_SIDE as f32 - 1.0)) * 2.0,
-                k_contact: 1000.0,
+                k_contact: 50.0,
                 mu: 0.5,
-                gravity: GRAVITY,
-                _pad0: [0.0, 0.0],
+                _pad0: 0.0,
             },
         }
     }
@@ -1331,27 +1336,27 @@ impl ClothSimApp {
         
 
         // 1. Compute Forces
-        // {
-        //     let total_springs = self.structural_count + self.shear_count + self.bend_count;
-        //     let wg_size = 64u32;
-        //     let springs_wg = (total_springs + wg_size - 1) / wg_size;
+        {
+            let total_springs = self.structural_count + self.shear_count + self.bend_count;
+            let wg_size = 64u32;
+            let springs_wg = (total_springs + wg_size - 1) / wg_size;
 
-        //     {
-        //         let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("compute_springs_pass"), timestamp_writes: None });
-        //         cpass.set_pipeline(&self.springs_pipeline);
-        //         cpass.set_bind_group(0, &self.spring_and_forces_bind_group, &[]);
-        //         cpass.dispatch_workgroups(springs_wg, 1, 1);
-        //     }
+            {
+                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("compute_springs_pass"), timestamp_writes: None });
+                cpass.set_pipeline(&self.springs_pipeline);
+                cpass.set_bind_group(0, &self.spring_and_forces_bind_group, &[]);
+                cpass.dispatch_workgroups(springs_wg, 1, 1);
+            }
 
-        //     // Per-particle accumulation
-        //     let particle_wg = (self.instance_count + wg_size - 1) / wg_size;
-        //     {
-        //         let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("accumulate_forces_pass"), timestamp_writes: None });
-        //         cpass.set_pipeline(&self.accumulate_pipeline);
-        //         cpass.set_bind_group(0, &self.spring_and_forces_bind_group, &[]);
-        //         cpass.dispatch_workgroups(particle_wg, 1, 1);
-        //     }
-        // }
+            // Per-particle accumulation
+            let particle_wg = (self.instance_count + wg_size - 1) / wg_size;
+            {
+                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("accumulate_forces_pass"), timestamp_writes: None });
+                cpass.set_pipeline(&self.accumulate_pipeline);
+                cpass.set_bind_group(0, &self.spring_and_forces_bind_group, &[]);
+                cpass.dispatch_workgroups(particle_wg, 1, 1);
+            }
+        }
         // 2. Compute Movement
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -1499,14 +1504,28 @@ impl App for ClothSimApp {
     fn update(&mut self, delta_time: f32, context: &Context) {
         self.fps = 1.0 / delta_time;
 
-        // TODO add simul and substep which is number of simul per delta time
-        let sim_uniform = SimulationData {
-            dt: self.time_scale * delta_time,
+        const TARGET_DT: f32 = 1.0 / 240.0;
+        const MAX_SUBSTEPS: u32 = 8;
+        let scaled_time = self.time_scale * delta_time;
+    
+        // Compute number of substeps needed (at least 1)
+        let mut num_steps = (scaled_time / TARGET_DT).ceil() as u32;
+        if num_steps == 0 { num_steps = 1; }
+        if num_steps > MAX_SUBSTEPS { num_steps = MAX_SUBSTEPS; }
+
+        // Per-substep dt (divide total time by steps)
+        let substep_dt = scaled_time / num_steps as f32;
+
+
+        for _ in 0..num_steps {
+            let sim_uniform = SimulationData {
+            dt: substep_dt,
             radius: self.cloth_particle_radius,
             globe_radius: self.globe_radius,
             mass: MASS,
-            _pad2: [0.0, 0.0, 0.0],
             grid_width: CLOTH_PARTICLES_PER_SIDE,
+            gravity: self.gravity,
+            _pad2: [0.0, 0.0],
             
         };
 
@@ -1516,7 +1535,7 @@ impl App for ClothSimApp {
 
 
         self.dispatch_compute(context);
-
+        }
     }
 
     fn resize(&mut self, new_width: u32, new_height: u32, context: &Context) {

@@ -16,17 +16,16 @@ struct PhysicsConstants {
     k_struct: f32,          // Springs Force
     k_shear: f32,
     k_bend: f32,
-    damping_c: f32,        // Damping Force
+    k_damp_struct: f32,        // Damping Force
+    k_damp_shear: f32,
+    k_damp_bend: f32,
     rest_len_struct: f32, 
     rest_len_shear: f32,
     rest_len_bend: f32,
 
     k_contact: f32,        // Contact Force =32bytes
     mu: f32,                // Friction
-
-    // Gravity
-    gravity: f32,
-    _pad0: vec2<f32>,       //=48bytes
+    _pad0: f32,       //=48bytes
 }
 
 struct SimulationData {
@@ -35,8 +34,9 @@ struct SimulationData {
     globe_radius: f32,  // to compute collisions
     mass: f32,          //=16bytes
     // --
-    _pad2: vec3<f32>,   //=32bytes
     grid_width: u32,
+    gravity: f32,
+    _pad2: vec2<f32>,
 } // =32bytes
 
 struct Particle {
@@ -82,7 +82,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     // ======== OTHER FORCES ========
     // Gravity
-    total_force += vec3<f32>(0.0, sim_data.mass * physics.gravity, 0.0);
+    total_force += vec3<f32>(0.0, sim_data.mass * sim_data.gravity, 0.0);
     // Contact
     // Friction
 
@@ -112,11 +112,21 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let min_dist = sim_data.globe_radius + sim_data.radius;
 
     if (dist < min_dist) {
-        let n = normalize(pos);
-        pos = n * min_dist;
+        if (dist > 1e-6) {
+            let n = normalize(pos);
+            let penetration = min_dist - dist;
+            pos += n * penetration;  // Push out
+            vel = vec3<f32>(0.0);    // Kill velocity
+        } else {
+            pos = vec3<f32>(0.0, 1.0, 0.0) * min_dist;
+            vel = vec3<f32>(0.0);
+        }
+        // OLD refletion vector
+        // let n = normalize(pos);
+        // pos = n * min_dist;
 
-        let v_dot_n = dot(vel, n);
-        vel = vel - 2.0 * v_dot_n * n;
+        // let v_dot_n = dot(vel, n);
+        // vel = vel - 2.0 * v_dot_n * n;
     }
 
 

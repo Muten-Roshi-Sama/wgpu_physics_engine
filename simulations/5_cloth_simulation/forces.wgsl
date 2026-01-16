@@ -54,28 +54,27 @@ struct PhysicsConstants {
     k_struct: f32,          // Springs Force
     k_shear: f32,
     k_bend: f32,
-    damping_c: f32,        // Damping Force
+    k_damp_struct: f32,        // Damping Force
+    k_damp_shear: f32,
+    k_damp_bend: f32,
     rest_len_struct: f32, 
     rest_len_shear: f32,
     rest_len_bend: f32,
 
     k_contact: f32,        // Contact Force =32bytes
     mu: f32,                // Friction
-
-    // Gravity
-    gravity: f32,
-    _pad0: vec2<f32>,       //=48bytes
+    _pad0: f32,       //=48bytes
 }
-
 
 struct SimulationData {
     dt: f32,
     radius: f32,
     globe_radius: f32,  // to compute collisions
     mass: f32,          //=16bytes
-    //
-    _pad2: vec3<f32>,   //=32bytes
+    // --
     grid_width: u32,
+    gravity: f32,
+    _pad2: vec2<f32>,
 } // =32bytes
 
 
@@ -137,17 +136,16 @@ fn get_spring_params(t: u32) -> vec2<f32> {
     }
 }
 
-
-
-
 // compute_springs (excerpt)
 @compute @workgroup_size(64)
 fn compute_springs(@builtin(global_invocation_id) id: vec3<u32>) {
 
     // use global invocation ID to know which spring type to process
     let gid = id.x;
-    let dt = sim_data.dt;       // for damping
-    let c = physics.damping_c;
+    let EPS = 1e-6;
+    let dtd = sim_data.dt;
+    let dt = select(dtd, EPS, dtd < EPS);       // for damping
+    // let c = physics.damping_c;
 
     // -------- Structural Case --------
     let ns = arrayLength(&structural_springs);
@@ -170,13 +168,20 @@ fn compute_springs(@builtin(global_invocation_id) id: vec3<u32>) {
         let stretch = dist - rest;
         let hooke = -k * stretch * dir; // force applied to p0
         // Damping
-        let rate = (dist - s.prev_length)/dt;
-        let damp = -c * rate * dir;
-        
+        // let rate = (dist - s.prev_length)/dt;
+        // let damp = -c * rate * dir;
+        // let total = hooke + damp;
+        let vel0 = particles[p0].velocity.xyz;
+        let vel1 = particles[p1].velocity.xyz;
+        let rel_vel = vel1 - vel0;  // relative velocity
+        let v_along_spring = dot(rel_vel, dir);  // component along spring
+        let c= physics.k_damp_struct;
+        let damp = -c * v_along_spring * dir;
         let total = hooke + damp;
 
         // Store into Spring
         s.force = vec4<f32>(total, 0.0);
+        s.prev_length = dist; // Update Length
         structural_springs[gid] = s;
         return;
     }
@@ -203,12 +208,17 @@ fn compute_springs(@builtin(global_invocation_id) id: vec3<u32>) {
         let hooke = -k * stretch * dir;
 
         // Damping
-        let rate = (dist - s.prev_length)/dt;
-        let damp = -c * rate * dir;
+        let vel0 = particles[p0].velocity.xyz;
+        let vel1 = particles[p1].velocity.xyz;
+        let rel_vel = vel1 - vel0;  // relative velocity
+        let v_along_spring = dot(rel_vel, dir);  // component along spring
+        let c= physics.k_damp_shear;
+        let damp = -c * v_along_spring * dir;
         let total = hooke + damp;
 
         // Store into Spring
         s.force = vec4<f32>(total, 0.0);
+        s.prev_length = dist; // Update Length
         shear_springs[gid1] = s;
         return;
     }
@@ -235,16 +245,22 @@ fn compute_springs(@builtin(global_invocation_id) id: vec3<u32>) {
         let hooke = -k * stretch * dir;
 
         // Damping
-        let rate = (dist - s.prev_length)/dt;
-        let damp = -c * rate * dir;
+        let vel0 = particles[p0].velocity.xyz;
+        let vel1 = particles[p1].velocity.xyz;
+        let rel_vel = vel1 - vel0;  // relative velocity
+        let v_along_spring = dot(rel_vel, dir);  // component along spring
+        let c= physics.k_damp_bend;
+        let damp = -c * v_along_spring * dir;
         let total = hooke + damp;
 
         // Store into Spring
         s.force = vec4<f32>(total, 0.0);
+        s.prev_length = dist; // Update Length
         bend_springs[gid2] = s;
         return;
     }
 
+    
     // gid >= total_springs -> nothing
 }
 
