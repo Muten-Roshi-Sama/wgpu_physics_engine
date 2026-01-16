@@ -33,6 +33,7 @@ from : https://songho.ca/opengl/gl_sphere.html
 ## Links & Ressources
 
 - Wgpu starting guide : [Zdgeier](https://zdgeier.com/wgpuintro.html)
+
 - Jack1232's Tutorial & Videos : [wgpu-step-by-step](https://github.com/jack1232/WebGPU-Step-By-Step)
 - Rust-based Game Engine : [Bevy](https://github.com/bevyengine/bevy)
 
@@ -62,6 +63,16 @@ from : https://songho.ca/opengl/gl_sphere.html
 - Index Buffer: Stores indices for indexed drawing (which vertices make up each triangle).
 - Uniform Buffer: Stores small, frequently-read data (camera matrices, lighting).
 - Storage Buffer: Stores large, read/write data (particle positions, velocities).
+
+#### Padding and offset rules
+
+WGSL (and wgpu) require that uniform buffer structs follow strict alignment rules for compatibility with the GPU hardware.
+- The total size of the struct must be a multiple of 16 bytes.
+
+f32 : 4 bytes
+vec2<f32> : 8 bytes (2 x 4)
+
+
 
 ### Bind Group
 - A collection of resources (buffers, textures, samplers) bound together for use in shaders.

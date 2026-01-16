@@ -91,6 +91,7 @@ const CLOTH_CENTRAL_POS: [f32;3] = [0.0, 4.0 * RADIUS, 0.0];
 const MASS: f32 = 10.0;
 
 // Springs
+const MAX_SPRINGS_PER_PARTICLE: usize = 12;
 const VERTEX_MASS: f32 = 0.16;
 const STRUCTURAL_STIFFNESS: f32 = 150.0;
 const SHEAR_STIFFNESS: f32 = 5.0;
@@ -161,6 +162,19 @@ struct Particle {
 }
 
 #[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Spring {
+    p0: u32,
+    p1: u32,
+    prev_length: f32,
+    spring_type: u32, // 0 = structural, 1 = shear, 2 = bend
+    // _pad: u32,        // alignment
+    force: [f32; 4],  // initialized to [0.0;4]
+}
+
+
+
+#[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct SimulationData {
     dt: f32,
@@ -200,6 +214,7 @@ struct InitVars {
     init_physics_constants: PhysicsConstants,
 }
 
+    // force_p1: vec4<f32>, // TODO: remove since fp1 = -fp0
 
 
 // ========== APP ==============
@@ -236,6 +251,14 @@ pub struct ClothSimApp {
     instance_buffer: wgpu::Buffer,
     instance_count: u32,
 
+    // Springs
+    structural_springs_buffer: wgpu::Buffer,
+    shear_springs_buffer: wgpu::Buffer,
+    bend_springs_buffer: wgpu::Buffer,
+    structural_count: u32,
+    shear_count: u32,
+    bend_count: u32,
+
     // cloth
     cloth_particles_texture_bind_group: wgpu::BindGroup, //particules inst = red
     cloth_pipeline: wgpu::RenderPipeline,
@@ -243,21 +266,20 @@ pub struct ClothSimApp {
     // Vars
     cloth_particle_radius: f32,
 
-    // ===== Computing ======
 
+    // ===== Computing ======
     // Buffers
     sim_data_buffer: wgpu::Buffer,
     physics_constants_buffer: wgpu::Buffer, 
 
     // Compute movement
     compute_pipeline: wgpu::ComputePipeline,
-    compute_bind_group: wgpu::BindGroup,
+    // compute_bind_group: wgpu::BindGroup,
     
-
     // Compute forces
-    forces_pipeline: wgpu::ComputePipeline,
-    forces_bind_group: wgpu::BindGroup,
-    
+    springs_pipeline: wgpu::ComputePipeline,
+    accumulate_pipeline: wgpu::ComputePipeline, 
+    spring_and_forces_bind_group: wgpu::BindGroup,
     
     // Physics
     time_scale:f32,
@@ -306,7 +328,6 @@ impl ClothSimApp {
             TEXTURE_FILE,
         );
 
-
         // 5. Lighting
         let light_bind_group_layout = Self::create_light_bind_group_layout(context);
         
@@ -343,6 +364,26 @@ impl ClothSimApp {
         let instances = Self::generate_instances(CLOTH_PARTICLES_PER_SIDE, CLOTH_PARTICLES_RADIUS);
         let instance_count: u32 = CLOTH_PARTICLES_PER_SIDE * CLOTH_PARTICLES_PER_SIDE; // 10x10 grid
         let instance_buffer = Self::create_instance_buffer(context, &instances);  // then called in render pipeline !
+        let pos0 = (
+            instances[0].model_matrix[12],
+            instances[0].model_matrix[13],
+            instances[0].model_matrix[14],
+        );
+        println!("Instance[0] translation = {:?}", pos0);
+        println!("Instance[0] matrix first 8 elems = {:?}", &instances[0].model_matrix[0..8]);
+        println!("Instance[0] matrix last 8 elems  = {:?}", &instances[0].model_matrix[8..16]);
+        println!("Particle size = {}", std::mem::size_of::<Particle>());
+
+
+        // 2.y Springs buffers
+        let (structural_list, shear_list, bend_list) = Self::generate_spring_lists(&instances, CLOTH_PARTICLES_PER_SIDE as usize, CLOTH_PARTICLES_PER_SIDE as usize);
+        let structural_count = structural_list.len() as u32;
+        let shear_count = shear_list.len() as u32;
+        let bend_count = bend_list.len() as u32;
+        let total_springs = structural_count + shear_count + bend_count;
+        let structural_springs_buffer = Self::create_springs_buffer(context, &structural_list);
+        let shear_springs_buffer = Self::create_springs_buffer(context, &shear_list);
+        let bend_springs_buffer = Self::create_springs_buffer(context, &bend_list);
 
         // 3. Textures for red cloth particles
         let cloth_particles_texture_bind_group = Self::load_texture_and_create_bind_group(
@@ -352,8 +393,6 @@ impl ClothSimApp {
         );
         // Texture for cloth mesh
         // let cloth_texture_bind_group = Self::load_texture_and_create_bind_group(
-
-
         // 
         let cloth_pipeline = Self::create_cloth_render_pipeline(
             context,
@@ -362,7 +401,7 @@ impl ClothSimApp {
             // &light_bind_group_layout,
         );
 
-        
+            
         // ===========================
         //       Compute Setup
         // ===========================
@@ -372,37 +411,35 @@ impl ClothSimApp {
             contents: bytemuck::bytes_of(&init_physics_constants),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let sim_data_storage_buffer = context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Simulation Data Storage Buffer (forces)"),
+        let sim_data_buffer = context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Simulation Data Storage Buffer"),
             contents: bytemuck::bytes_of(&init_sim_data),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-
-
-        // Compute forces
-        let forces_bind_group_layout = Self::create_forces_bind_group_layout(context);
-        let forces_bind_group = Self::create_forces_bind_group(
+        // Springs & Compute forces
+        let spring_and_forces_bind_group_layout = Self::create_spring_and_forces_bind_group_layout(context);
+        let spring_and_forces_bind_group = Self::create_spring_and_forces_bind_group(
             context,
-            &forces_bind_group_layout,
+            &spring_and_forces_bind_group_layout,
             &physics_constants_buffer,
-            &sim_data_storage_buffer,
+            &sim_data_buffer,
             &instance_buffer,
+            &structural_springs_buffer,
+            &shear_springs_buffer,
+            &bend_springs_buffer,
         );
-        let forces_pipeline = Self::create_compute_pipeline(context, &forces_bind_group_layout, FORCES_SHADER_FILE, "Forces Compute Pipeline");
-
+        let (springs_pipeline, accumulate_pipeline) = 
+            Self::create_forces_pipeline(context, &spring_and_forces_bind_group_layout, FORCES_SHADER_FILE, );
 
         // Compute movement 
-        let compute_bind_group_layout = Self::create_compute_bind_group_layout(
+        let compute_pipeline = Self::create_compute_pipeline(
             context,
-            wgpu::BufferBindingType::Uniform,
-            wgpu::BufferBindingType::Storage { read_only: false },
+            &spring_and_forces_bind_group_layout,
+            COMPUTE_SHADER_FILE,
+            "Compute Movement Pipeline",
         );
-        let (sim_data_buffer, compute_bind_group) = Self::create_compute_resources(
-            context, &compute_bind_group_layout, &instance_buffer, &init_sim_data, "Simulation Data Buffer", "compute_bind_group"
-        );
-        let compute_pipeline = Self::create_compute_pipeline(context, &compute_bind_group_layout, COMPUTE_SHADER_FILE, "Compute Movement Pipeline");
-
+        // let compute_bind_group = spring_and_forces_bind_group.clone();
 
         Self {
             // ======= GLOVE =========
@@ -427,10 +464,16 @@ impl ClothSimApp {
 
 
             // ==== Cloth =====
-            // cloth geometry
             // particles 
             instance_buffer,
             instance_count,
+            // Springs
+            structural_springs_buffer,
+            shear_springs_buffer,
+            bend_springs_buffer,
+            structural_count,
+            shear_count,
+            bend_count,
             // cloth
             cloth_particles_texture_bind_group,
             cloth_pipeline,
@@ -446,11 +489,12 @@ impl ClothSimApp {
 
             // Compute movement
             compute_pipeline,
-            compute_bind_group,
+            // compute_bind_group,
             
             // Compute forces
-            forces_pipeline,
-            forces_bind_group,
+            springs_pipeline,
+            accumulate_pipeline,
+            spring_and_forces_bind_group,
 
             // Physics vars
             time_scale: TIME_SCALE,
@@ -467,7 +511,6 @@ impl ClothSimApp {
 
     // --- end of new() ---
     }
-
 
     // =============================================
     //           Helpers
@@ -892,7 +935,6 @@ impl ClothSimApp {
 
         out
     }
-
     fn create_instance_buffer(context: &Context, instances: &[Particle]) -> wgpu::Buffer {
         context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Instance Buffer"),
@@ -900,6 +942,71 @@ impl ClothSimApp {
             usage: wgpu::BufferUsages::VERTEX 
             | wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::COPY_DST,
+        })
+    }
+
+    // 2.y Springs buffers
+    // Generate three spring lists and compute per-spring prev_length from initial instances positions.
+    // instances: Vec<Particle> where Particle.model_matrix[12..15] contain translation (row-major index 12..14 or [3][0..2] style).
+    fn generate_spring_lists(instances: &Vec<Particle>, grid_w: usize, grid_h: usize) 
+        -> (Vec<Spring>, Vec<Spring>, Vec<Spring>)
+        {
+        let mut structural: Vec<Spring> = Vec::new();
+        let mut shear: Vec<Spring> = Vec::new();
+        let mut bend: Vec<Spring> = Vec::new();
+
+        // helper to compute position of particle index i (reads instance.model_matrix translation)
+        let get_pos = |idx: usize| -> [f32;3] {
+            let m = &instances[idx].model_matrix;
+            // model_matrix stored row-major 16 floats: translation is at indices 12,13,14 (3rd column if row-major)
+            // adjust if your matrix layout differs; here we follow your Particle.model_matrix usage in WGSL [3][0..2].
+            [ m[12], m[13], m[14] ]
+        };
+
+        let push_unique = |vec: &mut Vec<Spring>, p: usize, q: usize, stype: u32| {
+            if p == q { return; }
+            if q < p { return; } // canonicalize
+            // compute rest length from initial positions
+            let pa = get_pos(p);
+            let pb = get_pos(q);
+            let dx = pb[0] - pa[0];
+            let dy = pb[1] - pa[1];
+            let dz = pb[2] - pa[2];
+            let rest = (dx*dx + dy*dy + dz*dz).sqrt();
+            vec.push(Spring {
+                p0: p as u32,
+                p1: q as u32,
+                prev_length: rest,
+                spring_type: stype,
+                force: [0.0; 4],
+            });
+        };
+
+        for r in 0..grid_h {
+            for c in 0..grid_w {
+                let i = r * grid_w + c;
+                // structural: right, down
+                if c + 1 < grid_w { push_unique(&mut structural, i, i + 1, 0); }
+                if r + 1 < grid_h { push_unique(&mut structural, i, i + grid_w, 0); }
+                // shear: down-right, down-left
+                if r + 1 < grid_h && c + 1 < grid_w { push_unique(&mut shear, i, i + grid_w + 1, 1); }
+                if r + 1 < grid_h && c >= 1 {
+                    let q = i + grid_w - 1;
+                    if q > i { push_unique(&mut shear, i, q, 1); }
+                }
+                // bend: two-right, two-down
+                if c + 2 < grid_w { push_unique(&mut bend, i, i + 2, 2); }
+                if r + 2 < grid_h { push_unique(&mut bend, i, i + 2 * grid_w, 2); }
+            }
+        }
+
+        (structural, shear, bend)
+    }
+    fn create_springs_buffer(context: &Context, springs: &[Spring]) -> wgpu::Buffer {
+        context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Springs Buffer"),
+            contents: bytemuck::cast_slice(springs),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         })
     }
 
@@ -989,8 +1096,8 @@ impl ClothSimApp {
 
 
     // =========== COMPUTE =================
-    // Forces
-    fn create_forces_bind_group_layout(context: &Context) -> wgpu::BindGroupLayout {
+    // Springs and Forces
+    fn create_spring_and_forces_bind_group_layout(context: &Context) -> wgpu::BindGroupLayout {
         context.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("forces_bind_group_layout"),
             entries: &[
@@ -1010,7 +1117,7 @@ impl ClothSimApp {
                     binding: 1,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -1027,35 +1134,95 @@ impl ClothSimApp {
                     },
                     count: None,
                 },
+
+                // --------------- SPRINGS ----------------
+                // 3 structural (rw)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                // 4 shear (rw)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                // 5 bend (rw)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
             ],
         })
     }
-    
-    fn create_forces_bind_group(
+    fn create_spring_and_forces_bind_group(
         context: &Context,
         layout: &wgpu::BindGroupLayout,
         physics_constants_buffer: &wgpu::Buffer,
-        sim_data_storage_buffer: &wgpu::Buffer,
+        sim_data_buffer: &wgpu::Buffer,
         particles_buffer: &wgpu::Buffer,
+        structural_buf: &wgpu::Buffer,
+        shear_buf: &wgpu::Buffer,
+        bend_buf: &wgpu::Buffer,
         ) -> wgpu::BindGroup {
         context.device().create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("forces_bind_group"),
             layout,
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: physics_constants_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: sim_data_storage_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: particles_buffer.as_entire_binding(),
-                },
+                wgpu::BindGroupEntry {binding: 0, resource: physics_constants_buffer.as_entire_binding(),},
+                wgpu::BindGroupEntry {binding: 1, resource: sim_data_buffer.as_entire_binding(),},
+                wgpu::BindGroupEntry {binding: 2, resource: particles_buffer.as_entire_binding(),},
+                // Springs
+                wgpu::BindGroupEntry { binding: 3, resource: structural_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: shear_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: bend_buf.as_entire_binding() },
             ],
         })
+    }
+    fn create_forces_pipeline(
+        context: &Context,
+        layout: &wgpu::BindGroupLayout,
+        shader_file: &str,
+        ) -> (wgpu::ComputePipeline, wgpu::ComputePipeline) {
+        let shader_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(shader_file);
+        let shader_src = std::fs::read_to_string(&shader_path)
+            .expect("Failed to read compute shader");
+
+        let compute_shader = context.device().create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("forces_shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_src.into()),
+        });
+
+        let pipeline_layout = context.device().create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Forces Pipeline Layout"),
+            bind_group_layouts: &[layout],
+            push_constant_ranges: &[],
+        });
+
+        let springs_pipeline = context.device().create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("springs_pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &compute_shader,
+            entry_point: "compute_springs",
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
+        let accumulate_pipeline = context.device().create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("accumulate_pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &compute_shader,
+            entry_point: "accumulate_forces",
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
+        (springs_pipeline, accumulate_pipeline)
     }
     
     // Movement
@@ -1090,7 +1257,6 @@ impl ClothSimApp {
             ],
         })
     }
-    
     fn create_compute_resources<T: bytemuck::Pod>(
         context: &Context,
         layout: &wgpu::BindGroupLayout,
@@ -1155,102 +1321,6 @@ impl ClothSimApp {
         })
     }
     
-    
-    
-    
-    // fn create_compute_bind_group_layout(context: &Context) -> wgpu::BindGroupLayout {
-    //     context.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-    //         label: Some("compute_bind_group_layout"),
-    //         entries: &[
-    //             // @binding(0): SimulationData uniform
-    //             wgpu::BindGroupLayoutEntry {
-    //                 binding: 0,
-    //                 visibility: wgpu::ShaderStages::COMPUTE,
-    //                 ty: wgpu::BindingType::Buffer {
-    //                     ty: wgpu::BufferBindingType::Uniform,
-    //                     has_dynamic_offset: false,
-    //                     min_binding_size: None,
-    //                 },
-    //                 count: None,
-    //             },
-    //             // @binding(1): Particle storage buffer (read_write)
-    //             wgpu::BindGroupLayoutEntry {
-    //                 binding: 1,
-    //                 visibility: wgpu::ShaderStages::COMPUTE,
-    //                 ty: wgpu::BindingType::Buffer {
-    //                     ty: wgpu::BufferBindingType::Storage { read_only: false },
-    //                     has_dynamic_offset: false,
-    //                     min_binding_size: None,
-    //                 },
-    //                 count: None,
-    //             },
-    //         ],
-    //     })
-    // }
-    
-    // fn create_compute_resources(
-    //     context: &Context,
-    //     layout: &wgpu::BindGroupLayout,
-    //     instance_buffer: &wgpu::Buffer,
-    //     init_sim_data: &SimulationData,
-    //     ) -> (wgpu::Buffer, wgpu::BindGroup) {
-        
-    //     // init_sim_data used down here but defined in init_vars()
-    
-    //     let sim_data_buffer = context.device().create_buffer_init(
-    //         &wgpu::util::BufferInitDescriptor {
-    //             label: Some("Simulation Uniform Buffer"),
-    //             contents: bytemuck::bytes_of(&init_sim_data),
-    //             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    //         }
-    //     );
-    
-    //     let compute_bind_group = context.device().create_bind_group(&wgpu::BindGroupDescriptor {
-    //         label: Some("compute_bind_group"),
-    //         layout,
-    //         entries: &[
-    //             wgpu::BindGroupEntry {
-    //                 binding: 0,
-    //                 resource: sim_data_buffer.as_entire_binding(),
-    //             },
-    //             wgpu::BindGroupEntry {
-    //                 binding: 1,
-    //                 resource: instance_buffer.as_entire_binding(),
-    //             },
-    //         ],
-    //     });
-    
-    //     (sim_data_buffer, compute_bind_group)
-    // }
-    
-    // fn create_compute_pipeline(
-    //     context: &Context,
-    //     layout: &wgpu::BindGroupLayout,
-    //     ) -> wgpu::ComputePipeline {
-    //     let shader_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(COMPUTE_SHADER_FILE);
-    //     let shader_src = std::fs::read_to_string(&shader_path)
-    //         .expect("Failed to read compute shader");
-        
-    //     let compute_shader = context.device().create_shader_module(wgpu::ShaderModuleDescriptor {
-    //         label: Some("Compute Shader"),
-    //         source: wgpu::ShaderSource::Wgsl(shader_src.into()),
-    //     });
-    
-    //     let pipeline_layout = context.device().create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-    //         label: Some("Compute Pipeline Layout"),
-    //         bind_group_layouts: &[layout],
-    //         push_constant_ranges: &[],
-    //     });
-    
-    //     context.device().create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-    //         label: Some("Compute Pipeline"),
-    //         layout: Some(&pipeline_layout),
-    //         module: &compute_shader,
-    //         entry_point: "main",
-    //         compilation_options: wgpu::PipelineCompilationOptions::default(),
-    //         cache: None,
-    //     })
-    // }
 
     fn dispatch_compute(&self, context: &Context) {
         let mut encoder = context.device().create_command_encoder(
@@ -1261,17 +1331,27 @@ impl ClothSimApp {
         
 
         // 1. Compute Forces
-        {
-            let mut forces_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Forces Pass"),
-                timestamp_writes: None,
-            });
-            forces_pass.set_pipeline(&self.forces_pipeline);
-            forces_pass.set_bind_group(0, &self.forces_bind_group, &[]);
+        // {
+        //     let total_springs = self.structural_count + self.shear_count + self.bend_count;
+        //     let wg_size = 64u32;
+        //     let springs_wg = (total_springs + wg_size - 1) / wg_size;
 
-            let workgroup_count = (self.instance_count + 63) / 64;
-            forces_pass.dispatch_workgroups(workgroup_count, 1, 1);
-        }
+        //     {
+        //         let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("compute_springs_pass"), timestamp_writes: None });
+        //         cpass.set_pipeline(&self.springs_pipeline);
+        //         cpass.set_bind_group(0, &self.spring_and_forces_bind_group, &[]);
+        //         cpass.dispatch_workgroups(springs_wg, 1, 1);
+        //     }
+
+        //     // Per-particle accumulation
+        //     let particle_wg = (self.instance_count + wg_size - 1) / wg_size;
+        //     {
+        //         let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("accumulate_forces_pass"), timestamp_writes: None });
+        //         cpass.set_pipeline(&self.accumulate_pipeline);
+        //         cpass.set_bind_group(0, &self.spring_and_forces_bind_group, &[]);
+        //         cpass.dispatch_workgroups(particle_wg, 1, 1);
+        //     }
+        // }
         // 2. Compute Movement
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -1279,7 +1359,7 @@ impl ClothSimApp {
                 timestamp_writes: None,
             });
             compute_pass.set_pipeline(&self.compute_pipeline);
-            compute_pass.set_bind_group(0, &self.compute_bind_group, &[]);
+            compute_pass.set_bind_group(0, &self.spring_and_forces_bind_group, &[]);
             
             let workgroup_count = (self.instance_count + 63) / 64;
             compute_pass.dispatch_workgroups(workgroup_count, 1, 1);

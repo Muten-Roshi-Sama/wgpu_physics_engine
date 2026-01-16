@@ -10,7 +10,7 @@
 
 //      - For stability, we must compute multiple time steps between each frame.
 
-//      - We consider the different vertices of the cloth are connected by springs. 
+//      - We consider the different in forces.wgsl vertices of the cloth are connected by springs. 
 //      - The forces are easily calculated using Hooke’s law :
 //          -> F_h = -k * dL
 
@@ -49,23 +49,18 @@
 
 //      -
 
+
 struct PhysicsConstants {
-    // Springs Force
-    k_struct: f32,
+    k_struct: f32,          // Springs Force
     k_shear: f32,
     k_bend: f32,
-
-    // Damping Force
-    damping_c: f32,        //=16bytes
+    damping_c: f32,        // Damping Force
     rest_len_struct: f32, 
     rest_len_shear: f32,
     rest_len_bend: f32,
 
-    // Contact Force
-    k_contact: f32,        //=32bytes
-
-    // Friction
-    mu: f32,
+    k_contact: f32,        // Contact Force =32bytes
+    mu: f32,                // Friction
 
     // Gravity
     gravity: f32,
@@ -79,7 +74,7 @@ struct SimulationData {
     globe_radius: f32,  // to compute collisions
     mass: f32,          //=16bytes
     //
-    _pad2: vec3<u32>,   //=32bytes
+    _pad2: vec3<f32>,   //=32bytes
     grid_width: u32,
 } // =32bytes
 
@@ -98,56 +93,29 @@ struct Particle {
 } // 48 + 16 + 16 = 80 bytes
 
 
-struct Neighbors {
-    // structural
-    struct0: u32,
-    struct1: u32,
-    // shear
-    shear0: u32,
-    shear1: u32,
-    // bend
-    bend0: u32,
-    bend1: u32,
-}
 
 
 
-@group(0) @binding(0) var<uniform> physics_constants: PhysicsConstants;                 // small binding to read
-@group(0) @binding(1) var<storage, read_write> sim_data: SimulationData;               // small binding to read
-@group(0) @binding(2) var<storage, read_write> particles: array<Particle>;    // bigger storage for R/W
 
-@compute @workgroup_size(64)    // compute shader entry point
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    /* Methodology :
-        - to avoid recomputation of the same spring, 
-        - each worker only computes forces at RIGHT and DOWN.
-    
-    */ 
-
-    // ====== GET ==========
-    let index = global_id.x;                    // get particle index
-    if index >= arrayLength(&particles) { return; } // Array bounds check
-    // let force = particles[index].force;
-    let pos1 = get_pos(index);
-
-
-    // ====== COMPUTE =========
-    var total_force = vec3<f32>(0.0, 0.0, 0.0);
-
-    // GRAVITY
-    total_force += sim_data.mass * physics_constants.gravity;
-
-    // SPRINGS
-    total_force += compute_spring_forces(index, pos1);
-
-    // Write final force
-    particles[index].force = vec4<f32>(total_force, 0.0);
-
-}
+struct Spring {
+    p0: u32,
+    p1: u32,
+    prev_length: f32,
+    spring_type: u32,  // 0 = structural, 1 = shear, 2 = bend
+    // _pad: u32,
+    force: vec4<f32>, // force applied to particle p0 , unused w component
+};
 
 
 
-// ================================================
+@group(0) @binding(0) var<uniform> physics: PhysicsConstants;
+@group(0) @binding(1) var<storage, read> sim_data: SimulationData;   // R
+@group(0) @binding(2) var<storage, read_write> particles: array<Particle>;
+// @group(0) @binding(3) var<storage, read_write> springs: array<Spring>;
+
+@group(0) @binding(3) var<storage, read_write> structural_springs: array<Spring>;
+@group(0) @binding(4) var<storage, read_write> shear_springs: array<Spring>;
+@group(0) @binding(5) var<storage, read_write> bend_springs: array<Spring>;
 
 
 fn get_pos(index: u32) -> vec3<f32> {
@@ -158,115 +126,253 @@ fn get_pos(index: u32) -> vec3<f32> {
     );
 }
 
-
-fn compute_distance_and_direction(pos1: vec3<f32>, index2: u32) -> vec4<f32> {
-    // let pos1 = get_pos(index1); //already computed !
-    let pos2 = get_pos(index2);
-    let dir = pos2 - pos1;
-    let dist = length(dir);
-    let dir_normalized = dir / dist;
-    return vec4<f32>(dir_normalized, dist);
+fn get_spring_params(t: u32) -> vec2<f32> {
+    // 0 : struct
+    // 1 : shear
+    // 2 : bend
+    switch (t) {
+        case 0u { return vec2<f32>(physics.k_struct, physics.rest_len_struct); }
+        case 1u { return vec2<f32>(physics.k_shear,  physics.rest_len_shear); }
+        default { return vec2<f32>(physics.k_bend,   physics.rest_len_bend); }
+    }
 }
 
 
-// ONLY RETURN RIGHT AND DOWN NEIGHBORS
-fn find_neighbors(index: u32) -> Neighbors {
-    // return array of neighbor indices for structural, shear, bend springs
-    var n: Neighbors;
-    n.struct0 = 0u;
-    n.struct1 = 0u;
-    n.shear0 = 0u;
-    n.shear1 = 0u;
-    n.bend0 = 0u;
-    n.bend1 = 0u;
 
-    let grid_width = sim_data.grid_width;
-    let col = index % grid_width;
-    let row = index / grid_width;
+
+// compute_springs (excerpt)
+@compute @workgroup_size(64)
+fn compute_springs(@builtin(global_invocation_id) id: vec3<u32>) {
+
+    // use global invocation ID to know which spring type to process
+    let gid = id.x;
+    let dt = sim_data.dt;       // for damping
+    let c = physics.damping_c;
+
+    // -------- Structural Case --------
+    let ns = arrayLength(&structural_springs);
+    if (gid < ns) {
+        var s = structural_springs[gid];
+        let p0 = s.p0; let p1 = s.p1;
+        if (p0 >= arrayLength(&particles) || p1 >= arrayLength(&particles)) { s.force = vec4<f32>(0.0); structural_springs[gid] = s; return; }
+        
+        // pos and dist
+        let pos0 = get_pos(p0); 
+        let pos1 = get_pos(p1);
+        let delta = pos1 - pos0; let dist = length(delta);
+        if (dist < 1e-6) { s.force = vec4<f32>(0.0); structural_springs[gid] = s; return; }
+        
+        // ==== Compute force =====
+        let dir = delta / dist;
+        let rest =  physics.rest_len_struct;
+        let k = physics.k_struct;
+        // Hooke
+        let stretch = dist - rest;
+        let hooke = -k * stretch * dir; // force applied to p0
+        // Damping
+        let rate = (dist - s.prev_length)/dt;
+        let damp = -c * rate * dir;
+        
+        let total = hooke + damp;
+
+        // Store into Spring
+        s.force = vec4<f32>(total, 0.0);
+        structural_springs[gid] = s;
+        return;
+    }
+
+    // -------- Shear Case --------
+    let gid1 = gid - ns;
+    let nh = arrayLength(&shear_springs);
+    if (gid1 < nh) {
+        var s = shear_springs[gid1];
+        let p0 = s.p0; let p1 = s.p1;
+        if (p0 >= arrayLength(&particles) || p1 >= arrayLength(&particles)) { s.force = vec4<f32>(0.0); shear_springs[gid1] = s; return; }
+        
+        // pos and dist
+        let pos0 = get_pos(p0); 
+        let pos1 = get_pos(p1);
+        let delta = pos1 - pos0; let dist = length(delta);
+        if (dist < 1e-6) { s.force = vec4<f32>(0.0); shear_springs[gid1] = s; return; }
+
+        // ==== Compute force =====
+        let dir = delta / dist;
+        let rest = physics.rest_len_shear;
+        let k = physics.k_shear;
+        let stretch = dist - rest;
+        let hooke = -k * stretch * dir;
+
+        // Damping
+        let rate = (dist - s.prev_length)/dt;
+        let damp = -c * rate * dir;
+        let total = hooke + damp;
+
+        // Store into Spring
+        s.force = vec4<f32>(total, 0.0);
+        shear_springs[gid1] = s;
+        return;
+    }
+
+    // -------- Bend Case --------
+    let gid2 = gid1 - nh;
+    let nb = arrayLength(&bend_springs);
+    if (gid2 < nb) {
+        var s = bend_springs[gid2];
+        let p0 = s.p0; let p1 = s.p1;
+        if (p0 >= arrayLength(&particles) || p1 >= arrayLength(&particles)) { s.force = vec4<f32>(0.0); bend_springs[gid2] = s; return; }
+        
+        // pos and dist
+        let pos0 = get_pos(p0); 
+        let pos1 = get_pos(p1);
+        let delta = pos1 - pos0; let dist = length(delta);
+        if (dist < 1e-6) { s.force = vec4<f32>(0.0); bend_springs[gid2] = s; return; }
+        
+        // ==== Compute force =====
+        let dir = delta / dist;
+        let rest = physics.rest_len_bend;
+        let k = physics.k_bend;
+        let stretch = dist - rest;
+        let hooke = -k * stretch * dir;
+
+        // Damping
+        let rate = (dist - s.prev_length)/dt;
+        let damp = -c * rate * dir;
+        let total = hooke + damp;
+
+        // Store into Spring
+        s.force = vec4<f32>(total, 0.0);
+        bend_springs[gid2] = s;
+        return;
+    }
+
+    // gid >= total_springs -> nothing
+}
+
+// accumulation pass: each particle scans all three spring lists and sums contributions.
+// This is simple (O(N*S)) but correct and does not require atomics.
+@compute @workgroup_size(64)
+fn accumulate_forces(@builtin(global_invocation_id) id: vec3<u32>) {
+    let pid = id.x;
+    if (pid >= arrayLength(&particles)) { return; }
+
+    var sum: vec3<f32> = vec3<f32>(0.0);
 
     // structural
-    if col < grid_width-1 {n.struct0 = index + 1;} // right
-    if row < grid_width-1 {n.struct1 = index + grid_width;} // down
-
-    // shear
-    if (col < grid_width-1) && (row < grid_width-1) {n.shear0 = index + 1 + grid_width;} // down-right
-    if (col > 0u) && (row < grid_width-1) {n.shear1 = index - 1 + grid_width;} // down-left
-    // bend
-    if col < grid_width-2 {n.bend0 = index + 2;} // right-right
-    if row < grid_width-2 {n.bend1 = index + 2 * grid_width;} // down-down
-
-    // let struct_neighbor: array<u32, 2> = [
-    //     index + 1,         // right
-    //     index - 1,         // left
-    //     index + sim_data.grid_width,  // down
-    //     index - sim_data.grid_width    // up
-    // ];
-
-    // // shear
-    // let shear_neighbor: array<u32, 2> = [
-    //     index + 1 + sim_data.grid_width,   // down-right
-    //     index - 1 + sim_data.grid_width,   // down-left
-    //     index + 1 - sim_data.grid_width,   // up-right
-    //     index - 1 - sim_data.grid_width    // up-left
-    // ];
-
-    // // bend
-    // let bend_neighbor: array<u32, 2> = [
-    //     index + 2,                         // right-right
-    //     index - 2,                         // left-left
-    //     index + 2 * sim_data.grid_width,   // down-down
-    //     index - 2 * sim_data.grid_width    // up-up
-    // ];
-
-    return n;
-}
-
-
-fn compute_spring_forces(index: u32, pos1: vec3<f32>) -> vec3<f32> {
-    //
-    var total_force = vec3<f32>(0.0, 0.0, 0.0);
-    let neighbors: Neighbors = find_neighbors(index);
-
-
-    // For each neighbor type and index (0 and 1)
-    for (var i = 0u; i < 2u; i = i + 1u) {
-
-        // Select neighbor
-        var n_struct: u32;
-        var n_shear: u32;
-        var n_bend: u32;
-        // Index (wgsl doesnt allow array indexing when it cannot the index range and the array size at compile time.)
-        if i == 0u {n_struct = neighbors.struct0; n_shear = neighbors.shear0; n_bend = neighbors.bend0; } 
-        else       {n_struct = neighbors.struct1; n_shear = neighbors.shear1; n_bend = neighbors.bend1; }
-
-
-        // Structural
-        if (n_struct != 0u) {
-            let dd = compute_distance_and_direction(pos1, n_struct);
-            let direction = dd.xyz;
-            let dist = dd.w;
-            let dt = dist - physics_constants.rest_len_struct;
-            total_force += physics_constants.k_struct * dt * direction;
-        }
-        // Shear
-        if (n_shear != 0u) {
-            let dd = compute_distance_and_direction(pos1, n_shear);
-            let direction = dd.xyz;
-            let dist = dd.w;
-            let dt = dist - physics_constants.rest_len_shear;
-            total_force += physics_constants.k_shear * dt * direction;
-        }
-        // Bend
-        if (n_bend != 0u) {
-            let dd = compute_distance_and_direction(pos1, n_bend);
-            let direction = dd.xyz;
-            let dist = dd.w;
-            let dt = dist - physics_constants.rest_len_bend;
-            total_force += physics_constants.k_bend * dt * direction;
+    let ns = arrayLength(&structural_springs);
+    for (var i: u32 = 0u; i < ns; i = i + 1u) {
+        let s = structural_springs[i];
+        if (s.p0 == pid) {
+            sum = sum + s.force.xyz;
+        } else if (s.p1 == pid) {
+            sum = sum - s.force.xyz;
         }
     }
-    return total_force;
+
+    // shear
+    let nh = arrayLength(&shear_springs);
+    for (var i: u32 = 0u; i < nh; i = i + 1u) {
+        let s = shear_springs[i];
+        if (s.p0 == pid) {
+            sum = sum + s.force.xyz;
+        } else if (s.p1 == pid) {
+            sum = sum - s.force.xyz;
+        }
+    }
+
+    // bend
+    let nb = arrayLength(&bend_springs);
+    for (var i: u32 = 0u; i < nb; i = i + 1u) {
+        let s = bend_springs[i];
+        if (s.p0 == pid) {
+            sum = sum + s.force.xyz;
+        } else if (s.p1 == pid) {
+            sum = sum - s.force.xyz;
+        }
+    }
+
+    // write spring total; add gravity in movement shader
+    particles[pid].force = vec4<f32>(sum, 0.0);
 }
+
+
+
+// =================
+
+
+// Compute the force of each spring applied to p0
+// @compute @workgroup_size(64)
+// fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+//     /*
+//         Goal :
+//             - for each spring, compute the force it exerts on its two particles
+//             - store the result in spring.force_p0 and spring.force_p1
+//             - later, in compute shader, iterate on particles to get those forces and obtain the position/velocity.   
+//      */
+
+//     // GET spring Index
+//     let sid = id.x;
+//     if (sid >= arrayLength(&springs)) {return;}
+
+//     var spring = springs[sid];
+//     let p0 = spring.p0;                  // get index
+//     let p1 = spring.p1;
+//     let pos0 = get_pos(p0); // get pos
+//     let pos1 = get_pos(p1);
+//     let delta = pos1 - pos0;
+//     let dist = length(delta);
+
+//     // Prevent divisionforce_p0 by zero (NaNs)
+//     if (dist < 1e-6) { spring.force = vec4<f32>(0.0); return; }
+
+//     // ==== Compute force =====
+//     let dir = delta / dist;// ==== Compute force =====
+//     let params = get_spring_params(spring.spring_type);
+//     let k = params.x;
+//     let rest_len = params.y;
+
+//     // Hooke's law
+//     let stretch = dist - rest_len;
+//     let hooke = k * stretch * dir;
+
+//     // TODO: DAMPING ?
+
+//     // Store into Spring
+//     spring.force =  vec4<f32>(hooke, 0.0);
+//     springs[sid] = spring;
+// }
+
+// // Compute TOTAL force on each particle (sum of all spring forces)
+// @compute @workgroup_size(64)
+// fn accumulate_forces(@builtin(global_invocation_id) id: vec3<u32>) {
+//     let pid = id.x;
+//     if (pid >= arrayLength(&particles)) { return; }
+
+//     // Find adjacency range for this particle
+//     let start = adj_offsets[pid];
+//     // adj_offsets length is N+1, safe to read adj_offsets[pid+1] only if pid+1 < length
+//     let end = adj_offsets[pid + 1u];
+
+//     var sum: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
+
+//     for (var ai = start; ai < end; ai = ai + 1u) {
+//         let sid = adj_indices[ai];
+//         if (sid >= arrayLength(&springs)) { continue; }
+//         let s = springs[sid];
+//         // s.force is the force applied to p0; depending on whether pid == p0 or p1, add or subtract
+//         if (s.p0 == pid) {
+//             sum = sum + s.force.xyz;
+//         } else if (s.p1 == pid) {
+//             sum = sum - s.force.xyz;
+//         } // else: malformed adjacency but ignore
+//     }
+
+//     // Optionally add gravity and other external forces here.
+//     // For now we write spring-based sum; movement shader will add gravity / mass / dt.
+//     particles[pid].force = vec4<f32>(sum, 0.0);
+// }
+
+
+
 
 
 
