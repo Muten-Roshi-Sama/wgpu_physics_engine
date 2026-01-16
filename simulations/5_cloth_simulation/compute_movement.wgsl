@@ -36,7 +36,8 @@ struct SimulationData {
     // --
     grid_width: u32,
     gravity: f32,
-    _pad2: vec2<f32>,
+    speed_damp: f32,
+    _pad2: f32,
 } // =32bytes
 
 struct Particle {
@@ -93,6 +94,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // ======= UPDATE VELOCITY & POSITION ========
     let accel = total_force / sim_data.mass;
     vel += accel * sim_data.dt;
+    vel *= pow(sim_data.speed_damp, sim_data.dt); // some global damping
     pos += vel * sim_data.dt;
 
 

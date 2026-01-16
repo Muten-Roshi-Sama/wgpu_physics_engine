@@ -74,8 +74,10 @@ struct SimulationData {
     // --
     grid_width: u32,
     gravity: f32,
-    _pad2: vec2<f32>,
+    speed_damp: f32,
+    _pad2: f32,
 } // =32bytes
+
 
 
 
@@ -176,7 +178,7 @@ fn compute_springs(@builtin(global_invocation_id) id: vec3<u32>) {
         let rel_vel = vel1 - vel0;  // relative velocity
         let v_along_spring = dot(rel_vel, dir);  // component along spring
         let c= physics.k_damp_struct;
-        let damp = -c * v_along_spring * dir;
+        let damp = c * v_along_spring * dir;
         let total = hooke + damp;
 
         // Store into Spring
@@ -213,7 +215,7 @@ fn compute_springs(@builtin(global_invocation_id) id: vec3<u32>) {
         let rel_vel = vel1 - vel0;  // relative velocity
         let v_along_spring = dot(rel_vel, dir);  // component along spring
         let c= physics.k_damp_shear;
-        let damp = -c * v_along_spring * dir;
+        let damp = c * v_along_spring * dir;
         let total = hooke + damp;
 
         // Store into Spring
@@ -250,7 +252,7 @@ fn compute_springs(@builtin(global_invocation_id) id: vec3<u32>) {
         let rel_vel = vel1 - vel0;  // relative velocity
         let v_along_spring = dot(rel_vel, dir);  // component along spring
         let c= physics.k_damp_bend;
-        let damp = -c * v_along_spring * dir;
+        let damp = c * v_along_spring * dir;
         let total = hooke + damp;
 
         // Store into Spring

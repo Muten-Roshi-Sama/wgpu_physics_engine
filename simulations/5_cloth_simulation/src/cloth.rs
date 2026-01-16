@@ -81,11 +81,13 @@ const _PAD: u32 = 0u32;
 
 // Physics
 const TIME_SCALE: f32 = 1.0;
+const HZ : f32 = 480.0;
 const GRAVITY: f32 = -9.81;
+const SPEED_DAMP: f32 = 0.90;
 
 // Cloth 
-const CLOTH_PARTICLES_PER_SIDE: u32 = 20;
-const CLOTH_PARTICLES_RADIUS: f32 = 0.5;
+const CLOTH_PARTICLES_PER_SIDE: u32 = 40;
+const CLOTH_PARTICLES_RADIUS: f32 = 0.3;
 const CLOTH_SIZE: f32 = 30.0;
 const CLOTH_CENTRAL_POS: [f32;3] = [0.0, 4.0 * RADIUS, 0.0];
 
@@ -96,9 +98,9 @@ const MASS: f32 = 1.0;
 const STRUCTURAL_STIFFNESS: f32 = 80.0;
 const SHEAR_STIFFNESS: f32 = 80.0;
 const BEND_STIFFNESS: f32 = 20.0;
-const STRUCTURAL_DAMPING: f32 = 0.25;
-const SHEAR_DAMPING: f32 = 0.25;
-const BEND_DAMPING: f32 = 0.1;
+const STRUCTURAL_DAMPING: f32 = 1.0;
+const SHEAR_DAMPING: f32 = 1.0;
+const BEND_DAMPING: f32 = 0.4;
 
 
 
@@ -183,7 +185,8 @@ struct SimulationData {
     mass: f32,
     grid_width: u32,
     gravity: f32,
-    _pad2: [f32; 2],
+    speed_damp: f32,
+    _pad2: f32,
 }
 
 
@@ -287,6 +290,7 @@ pub struct ClothSimApp {
     // Physics
     time_scale:f32,
     gravity: f32,
+    speed_damp: f32,
 
 
     // ==== UI ======
@@ -502,6 +506,7 @@ impl ClothSimApp {
             // Physics vars
             time_scale: TIME_SCALE,
             gravity: GRAVITY,
+            speed_damp: SPEED_DAMP,
 
             // ==== UI ======
             fps: 0.0,
@@ -536,7 +541,8 @@ impl ClothSimApp {
                 mass: MASS,
                 grid_width: CLOTH_PARTICLES_PER_SIDE,
                 gravity: GRAVITY,
-                _pad2: [0.0, 0.0],
+                speed_damp: SPEED_DAMP,
+                _pad2: 0.0,
                 
             },
             init_physics_constants: PhysicsConstants {
@@ -763,8 +769,6 @@ impl ClothSimApp {
             cache: None,
         })
     }
-  // ✅ Correct down-left index
-    // Light
     fn create_light_bind_group_layout(context: &Context) -> wgpu::BindGroupLayout {
         context.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("light_bind_group_layout"),
@@ -1466,6 +1470,7 @@ impl App for ClothSimApp {
             ui.heading("Physics");
             ui.add(egui::Slider::new(&mut self.gravity, -20.0..=10.0).text("Gravity Y"));
             ui.add(egui::Slider::new(&mut self.time_scale, 0.0..=2.0).text("Time Scale"));
+            ui.add(egui::Slider::new(&mut self.speed_damp, 0.0..=1.0).text("Speed Damping"));
             ui.separator();
 
 
@@ -1506,9 +1511,9 @@ impl App for ClothSimApp {
     fn update(&mut self, delta_time: f32, context: &Context) {
         self.fps = 1.0 / delta_time;
 
-        const TARGET_DT: f32 = 1.0 / 240.0;
+        const TARGET_DT: f32 = 1.0 / HZ;
         const MAX_SUBSTEPS: u32 = 8;
-        let scaled_time = self.time_scale * delta_time;
+        let scaled_time = self.time_scale * delta_time; // UI scaling
     
         // Compute number of substeps needed (at least 1)
         let mut num_steps = (scaled_time / TARGET_DT).ceil() as u32;
@@ -1527,7 +1532,8 @@ impl App for ClothSimApp {
             mass: MASS,
             grid_width: CLOTH_PARTICLES_PER_SIDE,
             gravity: self.gravity,
-            _pad2: [0.0, 0.0],
+            speed_damp: self.speed_damp,
+            _pad2: 0.0,
             
         };
 
