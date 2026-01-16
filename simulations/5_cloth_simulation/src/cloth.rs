@@ -57,7 +57,7 @@ const COMPUTE_SHADER_FILE: &str = "compute_movement.wgsl";
 const FORCES_SHADER_FILE: &str = "forces.wgsl";
 
 // textures
-const TEXTURE_FILE: &str = "../../textures/grey.png";
+const TEXTURE_FILE: &str = "../../textures/mesh.jpg";
 const CLOTH_PARTICLES_TEXTURE_FILE: &str = "../../textures/red.png";
 // const TEXTURE_FILE: &str = "../../textures/texture.png";
 // const TEXTURE_FILE: &str = "../../textures/earth2048.bmp";
@@ -75,8 +75,8 @@ const STACK_COUNT: usize = 64;
 const SECTOR_COUNT: usize = 128;
 // Specular light parameters
 const LIGHT_POS: [f32; 4] = [2.0*RADIUS, 2.0*RADIUS, 2.0*RADIUS, 0.0];
-const KS: f32 = 0.15;
-const SHININESS: f32 = 128.0;
+const KS: f32 = 2.0;
+const SHININESS: f32 = 100.0;
 const _PAD: u32 = 0u32;
 
 // Physics
@@ -147,7 +147,7 @@ impl Vertex {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct LightUniform {
-    light: [f32; 4],          // maps to vec4<f32> in WGSL
+    light_pos: [f32; 4],          // maps to vec4<f32> in WGSL
     ks: f32,                  // specular strength & shininess exponent
     shininess: f32,           // α-shininess exponent
     compute_specular: u32,    // whether to use specular component
@@ -297,7 +297,7 @@ pub struct ClothSimApp {
 
     // ==== UI ======
     fps: f32,
-    light_pos: [f32; 3],
+    light_pos: [f32; 4],
     checkbox_specular: bool,   // ui checkbox
     ks: f32,
     shininess: f32,
@@ -378,10 +378,10 @@ impl ClothSimApp {
             instances[0].model_matrix[13],
             instances[0].model_matrix[14],
         );
-        println!("Instance[0] translation = {:?}", pos0);
-        println!("Instance[0] matrix first 8 elems = {:?}", &instances[0].model_matrix[0..8]);
-        println!("Instance[0] matrix last 8 elems  = {:?}", &instances[0].model_matrix[8..16]);
-        println!("Particle size = {}", std::mem::size_of::<Particle>());
+        // println!("Instance[0] translation = {:?}", pos0);
+        // println!("Instance[0] matrix first 8 elems = {:?}", &instances[0].model_matrix[0..8]);
+        // println!("Instance[0] matrix last 8 elems  = {:?}", &instances[0].model_matrix[8..16]);
+        // println!("Particle size = {}", std::mem::size_of::<Particle>());
 
 
         // 2.y Springs buffers
@@ -512,7 +512,7 @@ impl ClothSimApp {
 
             // ==== UI ======
             fps: 0.0,
-            light_pos: [LIGHT_POS[0], LIGHT_POS[1], LIGHT_POS[2]],
+            light_pos: [LIGHT_POS[0], LIGHT_POS[1], LIGHT_POS[2], 0.0],
             checkbox_specular: true,
             ks: KS,
             shininess: SHININESS,
@@ -530,10 +530,10 @@ impl ClothSimApp {
     fn init_vars() -> InitVars {
         InitVars {
             init_light_uniform: LightUniform {
-                light: LIGHT_POS,
+                light_pos: LIGHT_POS,
                 ks: KS,
                 shininess: SHININESS,
-                compute_specular: 0u32,
+                compute_specular: 1u32,
                 _pad: _PAD,
             },
             init_sim_data: SimulationData {
@@ -820,15 +820,17 @@ impl ClothSimApp {
     }
     fn update_light_uniform(&self, context: &Context) {
         // check if need to update light uniform
-        let compute_specular = if self.checkbox_specular { 0u32 } else { 1u32 };
+        let compute_specular = if self.checkbox_specular { 1u32 } else { 0u32 };
         let updated_light = LightUniform {
-            light: [self.light_pos[0], self.light_pos[1], self.light_pos[2], 0.0],
+            light_pos: [self.light_pos[0], self.light_pos[1], self.light_pos[2], 0.0],
             ks: self.ks,
             shininess: self.shininess,
             compute_specular,
             _pad: _PAD,
             
         };
+        println!("Updating light: ks={}, shininess={}, compute_specular={}", 
+                self.ks, self.shininess, compute_specular);
         context.queue().write_buffer(
             &self.light_buffer,
             0,
@@ -841,63 +843,6 @@ impl ClothSimApp {
 
 
     // ====== Cloth ===========
-    // fn create_cloth_geometry() -> (Vec<Vertex>, Vec<u32>, u32) {
-
-    //     let mut cloth_vertices = Vec::new();
-    //     let mut cloth_indices: Vec<u16> = Vec::new();
-
-    //     // create the vertices
-    //     for i in 0..N_CLOTH_VERTICES_PER_ROW {
-    //         for j in 0..N_CLOTH_VERTICES_PER_ROW {
-    //             cloth_vertices.push(Vertex {
-    //                 position: [
-    //                     CLOTH_CENTER_X + i as f32 * (CLOTH_SIZE / (N_CLOTH_VERTICES_PER_ROW - 1) as f32) - (CLOTH_SIZE / 2.0),
-    //                     CLOTH_CENTER_Y,
-    //                     CLOTH_CENTER_Z + j as f32 * (CLOTH_SIZE / (N_CLOTH_VERTICES_PER_ROW - 1) as f32) - (CLOTH_SIZE / 2.0),
-    //                 ],
-    //                 normal: [0.0, 0.0, 0.0],
-    //                 tangent: [0.0, 0.0, 0.0],
-    //                 tex_coords: [
-    //                     i as f32 * (1.0 / (N_CLOTH_VERTICES_PER_ROW - 1) as f32),
-    //                     j as f32 * (1.0 / (N_CLOTH_VERTICES_PER_ROW - 1) as f32),
-    //                 ],
-    //             });
-    //         }
-    //     }
-
-    //     // create the indices
-    //     for i in 0..N_CLOTH_VERTICES_PER_ROW - 1 {
-    //         for j in 0..N_CLOTH_VERTICES_PER_ROW - 1 {
-    //             // first triangle
-    //             cloth_indices.push((i * N_CLOTH_VERTICES_PER_ROW + j) as u16);
-    //             cloth_indices.push((i * N_CLOTH_VERTICES_PER_ROW + j + 1) as u16);
-    //             cloth_indices.push(((i + 1) * N_CLOTH_VERTICES_PER_ROW + j) as u16);
-    //             // second triangle
-    //             cloth_indices.push((i * N_CLOTH_VERTICES_PER_ROW + j + 1) as u16);
-    //             cloth_indices.push(((i + 1) * N_CLOTH_VERTICES_PER_ROW + j + 1) as u16);
-    //             cloth_indices.push(((i + 1) * N_CLOTH_VERTICES_PER_ROW + j) as u16);
-    //         }
-    //     }
-
-    //     // set the default speed of the cloth
-    //     let mut cloth_velocities: Vec<Velocity> = Vec::new();
-    //     for _i in cloth_vertices.iter_mut() {
-    //         cloth_velocities.push(Velocity {
-    //             velocity: [0.0, 0.0, 0.0],
-    //         });
-    //     }
-    //     // Return
-    //     let num__cloth_indices = cloth_indices.len() as u32;
-    //     (cloth_vertices, cloth_indices, num_cloth_indices)
-    // }
-
-    // fn create_storage_buffer(context: &Context, indices: &[u32]) -> wgpu::Buffer {
-    //     context.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
-    //         label: Some("Storage Buffer"),
-    //         contents: bytemuck::cast_slice(indices),
-    //         usage: wgpu::BufferUsages::STORAGE,
-    //     })
-    // }
 
     // 2.x Instance buffer
     fn generate_instances(count: u32, radius: f32) -> Vec<Particle> {
@@ -1450,11 +1395,11 @@ impl App for ClothSimApp {
             let mut light_changed = false;
             
             // to do : hitting checkbox completely deactivates specular (cannot reactivate)
-            // light_changed |= ui.checkbox(&mut self.checkbox_specular, "Specular").changed();
+            light_changed |= ui.checkbox(&mut self.checkbox_specular, "Specular").changed();
 
-            light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[0], -5.0..=5.0).text("Light X")).changed();
-            light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[1], -5.0..=5.0).text("Light Y")).changed();
-            light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[2], -5.0..=5.0).text("Light Z")).changed();
+            light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[0], -50.0..=50.0).text("Light X")).changed();
+            light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[1], -50.0..=50.0).text("Light Y")).changed();
+            light_changed |= ui.add(egui::Slider::new(&mut self.light_pos[2], -50.0..=50.0).text("Light Z")).changed();
             
             ui.add_space(5.0);
             light_changed |= ui.add(egui::Slider::new(&mut self.ks, 0.0..=2.0).text("Specular (ks)")).changed();

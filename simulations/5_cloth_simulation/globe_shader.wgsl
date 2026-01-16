@@ -104,7 +104,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let diffuse = color.xyz * shading * luminosity;
 
     // Return early if no specular computation
-    if(light_uni.compute_specular != 0u) {
+    if(light_uni.compute_specular == 0u) {
         return vec4<f32>(diffuse, 1.0);
     }
 
