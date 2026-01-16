@@ -88,17 +88,17 @@ const CLOTH_PARTICLES_PER_SIDE: u32 = 20;
 const CLOTH_PARTICLES_RADIUS: f32 = 0.5;
 const CLOTH_SIZE: f32 = 30.0;
 const CLOTH_CENTRAL_POS: [f32;3] = [0.0, 4.0 * RADIUS, 0.0];
-const MASS: f32 = 10.0;
+
 
 // Springs
 const MAX_SPRINGS_PER_PARTICLE: usize = 12;
-const VERTEX_MASS: f32 = 0.16;
-const STRUCTURAL_STIFFNESS: f32 = 150.0;
-const SHEAR_STIFFNESS: f32 = 5.0;
-const BEND_STIFFNESS: f32 = 15.0;
-const STRUCTURAL_DAMPING: f32 = 1.5;
-const SHEAR_DAMPING: f32 = 0.05;
-const BEND_DAMPING: f32 = 0.15;
+const MASS: f32 = 1.0;
+const STRUCTURAL_STIFFNESS: f32 = 80.0;
+const SHEAR_STIFFNESS: f32 = 80.0;
+const BEND_STIFFNESS: f32 = 20.0;
+const STRUCTURAL_DAMPING: f32 = 0.25;
+const SHEAR_DAMPING: f32 = 0.25;
+const BEND_DAMPING: f32 = 0.1;
 
 
 
@@ -763,7 +763,7 @@ impl ClothSimApp {
             cache: None,
         })
     }
-
+  // ✅ Correct down-left index
     // Light
     fn create_light_bind_group_layout(context: &Context) -> wgpu::BindGroupLayout {
         context.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -994,10 +994,12 @@ impl ClothSimApp {
                 if c + 1 < grid_w { push_unique(&mut structural, i, i + 1, 0); }
                 if r + 1 < grid_h { push_unique(&mut structural, i, i + grid_w, 0); }
                 // shear: down-right, down-left
-                if r + 1 < grid_h && c + 1 < grid_w { push_unique(&mut shear, i, i + grid_w + 1, 1); }
+                if r + 1 < grid_h && c + 1 < grid_w { 
+                    push_unique(&mut shear, i, i + grid_w + 1, 1); 
+                }
                 if r + 1 < grid_h && c >= 1 {
-                    let q = i + grid_w - 1;
-                    if q > i { push_unique(&mut shear, i, q, 1); }
+                    let q = (r + 1) * grid_w + (c - 1);
+                    push_unique(&mut shear, i, q, 1);
                 }
                 // bend: two-right, two-down
                 if c + 2 < grid_w { push_unique(&mut bend, i, i + 2, 2); }

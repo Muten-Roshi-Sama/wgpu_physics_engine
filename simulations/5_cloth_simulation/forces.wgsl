@@ -166,7 +166,7 @@ fn compute_springs(@builtin(global_invocation_id) id: vec3<u32>) {
         let k = physics.k_struct;
         // Hooke
         let stretch = dist - rest;
-        let hooke = -k * stretch * dir; // force applied to p0
+        let hooke = k * stretch * dir; // force applied to p0
         // Damping
         // let rate = (dist - s.prev_length)/dt;
         // let damp = -c * rate * dir;
@@ -205,7 +205,7 @@ fn compute_springs(@builtin(global_invocation_id) id: vec3<u32>) {
         let rest = physics.rest_len_shear;
         let k = physics.k_shear;
         let stretch = dist - rest;
-        let hooke = -k * stretch * dir;
+        let hooke = k * stretch * dir;
 
         // Damping
         let vel0 = particles[p0].velocity.xyz;
@@ -242,7 +242,7 @@ fn compute_springs(@builtin(global_invocation_id) id: vec3<u32>) {
         let rest = physics.rest_len_bend;
         let k = physics.k_bend;
         let stretch = dist - rest;
-        let hooke = -k * stretch * dir;
+        let hooke = k * stretch * dir;
 
         // Damping
         let vel0 = particles[p0].velocity.xyz;
