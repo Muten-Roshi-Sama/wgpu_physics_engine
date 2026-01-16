@@ -83,12 +83,12 @@ const _PAD: u32 = 0u32;
 const TIME_SCALE: f32 = 1.0;
 const HZ : f32 = 480.0;
 const GRAVITY: f32 = -9.81;
-const SPEED_DAMP: f32 = 0.90;
-const COLLISION_K: f32 = 1000.0;
-const FRICTION_COEFF: f32 = 0.2;
+const SPEED_DAMP: f32 = 1.0;
+const COLLISION_K: f32 = 2000.0;
+const FRICTION_COEFF: f32 = 0.1;
 
 // Cloth 
-const CLOTH_PARTICLES_PER_SIDE: u32 = 40;
+const CLOTH_PARTICLES_PER_SIDE: u32 = 60;
 const CLOTH_PARTICLES_RADIUS: f32 = 0.1;
 const CLOTH_SIZE: f32 = 30.0;
 const CLOTH_CENTRAL_POS: [f32;3] = [0.0, 4.0 * RADIUS, 0.0];
@@ -97,12 +97,12 @@ const CLOTH_CENTRAL_POS: [f32;3] = [0.0, 4.0 * RADIUS, 0.0];
 // Springs
 const MAX_SPRINGS_PER_PARTICLE: usize = 12;
 const MASS: f32 = 1.0;
-const STRUCTURAL_STIFFNESS: f32 = 80.0;
-const SHEAR_STIFFNESS: f32 = 80.0;
-const BEND_STIFFNESS: f32 = 20.0;
-const STRUCTURAL_DAMPING: f32 = 1.0;
-const SHEAR_DAMPING: f32 = 1.0;
-const BEND_DAMPING: f32 = 0.4;
+const STRUCTURAL_STIFFNESS: f32 = 450.0;
+const SHEAR_STIFFNESS: f32 = 300.0;
+const BEND_STIFFNESS: f32 = 100.0;
+const STRUCTURAL_DAMPING: f32 = 5.0;
+const SHEAR_DAMPING: f32 = 5.0;
+const BEND_DAMPING: f32 = 2.0;
 
 
 
@@ -1416,7 +1416,7 @@ impl App for ClothSimApp {
             // ====== Physics ======
             ui.heading("Physics");
             ui.add(egui::Slider::new(&mut self.gravity, -20.0..=10.0).text("Gravity Y"));
-            ui.add(egui::Slider::new(&mut self.time_scale, 0.0..=2.0).text("Time Scale"));
+            ui.add(egui::Slider::new(&mut self.time_scale, 0.0..=6.8).text("Time Scale"));
             ui.add(egui::Slider::new(&mut self.speed_damp, 0.0..=1.0).text("Speed Damping"));
             ui.separator();
 
@@ -1424,7 +1424,7 @@ impl App for ClothSimApp {
 
             // ====== Geometry ======
             ui.heading("Geometry");
-            if ui.add(egui::Slider::new(&mut self.cloth_particle_radius, 0.1..=4.0).text("Cloth Particle Radius")).changed() {
+            if ui.add(egui::Slider::new(&mut self.cloth_particle_radius, 0.05..=0.5).text("Cloth Particle Radius")).changed() {
                 let new_instances = Self::generate_instances(CLOTH_PARTICLES_PER_SIDE, self.cloth_particle_radius);
                 // Update the instance buffer
                 context.queue().write_buffer(

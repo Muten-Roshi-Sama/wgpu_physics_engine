@@ -14,9 +14,9 @@ fn main() {
 
     let mut runner = Runner::new(
         "Particles Simulations",
+        1200,
         800,
-        600,
-        egui::Color32::from_rgb(245, 245, 245),
+        egui::Color32::from_rgb(50, 50, 50),
         32,
         0,
         Box::new(|context| Arc::new(ClothSimApp::new(context))),
